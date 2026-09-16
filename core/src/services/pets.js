@@ -5,7 +5,7 @@ const { log, toNum } = require('../utils/utils');
 const { getBag, getBagItems } = require('./warehouse');
 const { getDogInfo } = require('./dog-skill-gifts');
 
-const PET_IDS = [90001, 90002, 90003, 90011, 90021];
+const PET_IDS = [90001, 90002, 90003, 90011, 90021, 90031];
 const FOOD_DURATIONS = new Map([[90004, 86400], [90005, 259200], [90006, 432000]]);
 const MAX_PROTECT_SECONDS = 30 * 86400;
 let commandTail = Promise.resolve();

@@ -5,6 +5,7 @@ const { CONFIG } = require('../config/config');
 const { getLevelExpProgress } = require('../config/gameConfig');
 const {
     getAutomation,
+    getFriendBlacklist,
     getConfigSnapshot,
     applyConfigSnapshot
 } = require('../models/store');
@@ -292,6 +293,169 @@ function startDailyRoutineTimer() {
 
 // ==================== 活动自动控制 ====================
 
+const petDiaryBattleEnabled = () => loginReady && !friendSyncPaused
+    && getAutomation().pet_diary_battle === true;
+const petDiaryBattleExcluded = gid => String(getUserState().gid) === gid
+    || getFriendBlacklist(process.env.FARM_ACCOUNT_ID || '').some(value => String(value) === gid);
+const runPetDiaryBattles = require('../services/pet-diary-battle-automation').createPetDiaryBattleAutomation({
+    getPet: () => require('../services/activity').getPetDiary(),
+    getFriends: () => getFriendsList(),
+    getFriend: gid => require('../services/activity').getPetDiaryFriend(gid),
+    operate: (action, params) => require('../services/activity').operatePetDiary(action, params, {
+        shouldContinue: () => petDiaryBattleEnabled() && !petDiaryBattleExcluded(params.gid),
+    }),
+    enabled: petDiaryBattleEnabled,
+    excluded: petDiaryBattleExcluded,
+    now: () => require('../utils/utils').getServerTimeSec() * 1000,
+    pause: () => new Promise(resolve => setTimeout(resolve, 400)),
+    report: (message, detail) => log('活动', `${message}（检查 ${detail.scanned} 人，夺宝 ${detail.battles} 次）`, {
+        module: 'activity', event: '自动好友夺宝', result: detail.error ? 'error' : 'ok', ...detail,
+    }),
+});
+
+/**
+ * 萌宠成长日记（S3）自动化。
+ *
+ * 设计约束：
+ * - 只调用 operatePetDiary，不绕过 service 的任何前置校验（限额、资源、活动窗口、拒绝钻石）。
+ * - 每次 operate 返回完整 snapshot，直接拿来驱动下一步，避免额外读。
+ * - 执行顺序有依赖：领养 -> 投喂 -> 领狗 -> 选锦囊 -> 寻宝 -> 各类领取。
+ *   选锦囊必须在投喂之后：canChoose 要求已成年，而成年靠投喂换来。
+ *   阶段 1（投喂）与阶段 2（寻宝）在单个快照内互斥，但同一轮里可以级联：
+ *   投喂 10 次成年 -> 领狗 -> 选锦囊 -> 转入寻宝。
+ * - 循环都有硬上限，即使服务端标志位异常也不会打转。
+ */
+async function runPetDiaryAutomation(flags) {
+    const { getPetDiary, operatePetDiary } = require('../services/activity');
+    const { getServerTimeSec } = require('../utils/utils');
+    const spacer = () => new Promise(resolve => setTimeout(resolve, 400));
+    // 用漂移校正后的服务器时钟，而不是快照里抓取的 pet.serverTime：
+    // 一轮跑下来可能过去几分钟，快照时间戳只会偏小，导致中途成熟的宝藏被漏掉、
+    // 精准唤醒也会算得偏晚。service 端 openTreasure 的判定用的就是这个时钟。
+    const serverNowMs = () => getServerTimeSec() * 1000;
+
+    let pet = await getPetDiary();
+    if (!pet || pet.active !== true) {
+        workerScheduler.clear('pet_diary_treasure_ready');
+        return;
+    }
+
+    // 单步执行器：判定 -> 操作 -> 用返回的 snapshot 更新状态。
+    // 失败只记日志不中断后续步骤，避免一个受限操作拖垮整批。
+    // ready() 也放进 try：它一旦抛出会逃出本函数并被外层 catch 吞掉，
+    // 连带跳过后续所有活动自动化，且只留一条无指向的通用错误日志。
+    const step = async (enabled, event, ready, action, params = {}) => {
+        try {
+            if (!enabled || !ready()) return false;
+            const result = await operatePetDiary(action, params);
+            if (result?.snapshot) pet = result.snapshot;
+            const rewards = (result?.rewards || []).map(item => `${item.name}x${item.count}`).join('、');
+            log('活动', `萌宠日记${event}完成${rewards ? `：${rewards}` : ''}`, {
+                module: 'activity', event: `萌宠日记${event}`, result: 'success'
+            });
+            return true;
+        } catch (err) {
+            log('活动', `萌宠日记${event}失败: ${err.message}`, {
+                module: 'activity', event: `萌宠日记${event}`, result: 'error'
+            });
+            return false;
+        }
+    };
+
+    // 领养比熊。未领养时后续所有玩法都不可用，必须最先执行。
+    await step(flags.adopt, '领养比熊', () => pet.nurture?.initialized !== true, 'initialize');
+
+    // 阶段 1：投喂。单次成长 700，成年阈值 7000，即 10 次成年即转阶段 2。
+    // 日限虽为 16，但 canFeed 要求未成年，所以单次运行最多 10 次。
+    let fed = 0;
+    while (flags.feed && pet.nurture?.canFeed === true && fed < 12) {
+        if (!await step(true, '投喂', () => true, 'feed')) break;
+        fed++;
+        await spacer();
+    }
+
+    // 成年即领取比熊，与领养同属一次性领取，复用同一开关。
+    await step(flags.adopt, '领取比熊',
+        () => pet.nurture?.adult === true && pet.nurture?.dogGranted !== true, 'claimDog');
+
+    // 选锦囊必须排在投喂之后：canChoose 要求已成年（stage 2），
+    // 而成年是投喂到 7000 成长值换来的。放在投喂前会导致刚成年的那一轮永远选不到锦囊。
+    // 锦囊影响夺宝结算，所以又要排在寻宝之前。
+    //
+    // 只选不刷新：免费刷新每日仅 1 次，而池内锦囊均为正向效果，
+    // 盲目重摇再取 pool[0] 期望收益为零，白扣一次免费额度。
+    if (flags.charm && pet.charms?.canChoose && pet.charms.pool?.length) {
+        await step(true, '选择锦囊', () => true, 'equipCharm', { charmId: pet.charms.pool[0].id });
+    }
+
+    // 阶段 2：寻宝，日限 10 次。与投喂消耗同一种元气糕（1028 x700），
+    // 刚成年那一轮通常因元气糕已耗尽而拿不到 canDraw。
+    let drawn = 0;
+    while (flags.draw && pet.hunt?.canDraw === true && drawn < 12) {
+        if (!await step(true, '寻宝', () => true, 'draw')) break;
+        drawn++;
+        await spacer();
+    }
+
+    // 爪印手记：逐个领取已解锁未领取的。
+    if (flags.story) {
+        let claimed = 0;
+        while (claimed < 20) {
+            const story = (pet.stories || []).find(item => item.unlocked && !item.claimed);
+            if (!story) break;
+            if (!await step(true, '领取手记', () => true, 'story', { order: story.order })) break;
+            claimed++;
+            await spacer();
+        }
+    }
+
+    await step(flags.seeds, '领取种子礼包', () => pet.seeds?.canClaim === true, 'seeds');
+
+    // 节令小礼：窗口内可领取的逐个领。
+    if (flags.solar) {
+        for (const term of (pet.solarTerms?.terms || [])) {
+            if (term.canClaim !== true) continue;
+            await step(true, `领取${term.name || '节令'}好礼`, () => true, 'solar', { termId: term.id });
+            await spacer();
+        }
+    }
+
+    // 宝藏护送：status 3 已完成，status 2 且 endTime 已过也算完成。
+    // service 端会一并处理，这里只判断是否存在可开的宝藏。
+    const treasureReady = () => (pet.treasures || []).some(item => item.status === 3
+        || (item.status === 2 && item.endTime > 0 && item.endTime <= serverNowMs()));
+    if (flags.treasure) {
+        let opened = 0;
+        while (treasureReady() && opened < 20) {
+            if (!await step(true, '开启宝藏', () => true, 'openTreasure')) break;
+            opened++;
+            await spacer();
+        }
+    }
+
+    await step(flags.compensation, '领取夺宝补偿',
+        () => BigInt(String(pet.compensationCount || '0')) > 0n, 'compensation');
+
+    if (flags.battle) await runPetDiaryBattles();
+
+    // 护送完成是时间驱动的，5 分钟轮询会白等。按最近一个 endTime 精准唤醒，
+    // 与 rain_poem_weather_renew 同一套写法：先清后设，+2s 安全垫，回调重入顶层函数。
+    workerScheduler.clear('pet_diary_treasure_ready');
+    if (flags.treasure) {
+        const nowMs = serverNowMs();
+        const nextEnd = (pet.treasures || [])
+            .filter(item => item.status === 2 && item.endTime > nowMs)
+            .map(item => item.endTime)
+            .sort((a, b) => a - b)[0];
+        if (nextEnd) {
+            const delayMs = Math.max(1000, nextEnd - nowMs + 2000);
+            workerScheduler.setTimeoutTask('pet_diary_treasure_ready', delayMs, () => {
+                runStarActivityAutoClaims().catch(() => null);
+            });
+        }
+    }
+}
+
 async function runStarActivityAutoClaims() {
     if (!loginReady || friendSyncPaused || starActivityClaimRunning) return;
 
@@ -313,13 +477,26 @@ async function runStarActivityAutoClaims() {
     const donateCharityLoveEnabled = automation.charity_flower_donate === true;
     const claimCharityRewardsEnabled = automation.charity_flower_reward_claim === true;
     const claimCharityPublicFundEnabled = automation.charity_flower_public_fund_claim === true;
+    const petDiaryAdoptEnabled = automation.pet_diary_adopt === true;
+    const petDiaryFeedEnabled = automation.pet_diary_feed === true;
+    const petDiaryDrawEnabled = automation.pet_diary_draw === true;
+    const petDiaryStoryEnabled = automation.pet_diary_story_claim === true;
+    const petDiarySeedEnabled = automation.pet_diary_seed_claim === true;
+    const petDiarySolarEnabled = automation.pet_diary_solar_claim === true;
+    const petDiaryTreasureEnabled = automation.pet_diary_treasure_open === true;
+    const petDiaryCompensationEnabled = automation.pet_diary_compensation_claim === true;
+    const petDiaryCharmEnabled = automation.pet_diary_charm_equip === true;
+    const petDiaryBattleFlag = automation.pet_diary_battle === true;
+    const petDiaryAnyEnabled = petDiaryAdoptEnabled || petDiaryFeedEnabled || petDiaryDrawEnabled
+        || petDiaryStoryEnabled || petDiarySeedEnabled || petDiarySolarEnabled
+        || petDiaryTreasureEnabled || petDiaryCompensationEnabled || petDiaryCharmEnabled || petDiaryBattleFlag;
     const qixiFriendPriority = Array.isArray(automation.qixi_friend_priority)
         ? automation.qixi_friend_priority.map(Number).filter(gid => gid > 0) : [];
     if (!claimPassport && !claimSolarTerms && !claimRecords && !claimQingmeiSeedsEnabled && !brewQingmeiWineEnabled
         && !useQixiDewEnabled && !buildQixiBridgeEnabled && !giftQixiSachetEnabled
         && !buyRainPoemBottleEnabled && !collectRainPoemWeatherEnabled && !useRainPoemSummonEnabled && !useRainPoemPrankEnabled
         && !unlockRainPoemResearchEnabled && !claimCharityShareEnabled && !donateCharityLoveEnabled
-        && !claimCharityRewardsEnabled && !claimCharityPublicFundEnabled) return;
+        && !claimCharityRewardsEnabled && !claimCharityPublicFundEnabled && !petDiaryAnyEnabled) return;
 
     starActivityClaimRunning = true;
     try {
@@ -533,7 +710,9 @@ async function runStarActivityAutoClaims() {
                 unlockRainPoemResearch
             } = require('../services/activity');
             let rainPoem = await getRainPoemActivity();
-            if (rainPoem?.active === false) return;
+            // 活动已结束时只跳过雨落成诗自身。此处原为 return，会连带跳过后面所有活动
+            // （萌宠日记排在最后，一旦雨落成诗结束就永远不执行且无任何日志）。
+            if (rainPoem?.active !== false) {
             const lightningHarvestComplete = rainPoem?.lightningHarvest?.complete === true;
 
             // 雷电变异作物每日目标未完成时，按服务端天气结束时间精准续接。
@@ -635,6 +814,22 @@ async function runStarActivityAutoClaims() {
                     log('活动', `自动解锁气象研究失败: ${err.message}`, { module: 'activity', event: '雨落成诗自动研究', result: 'error', count: unlocked });
                 }
             }
+            } // end if (rainPoem?.active !== false)
+        }
+
+        if (petDiaryAnyEnabled) {
+            await runPetDiaryAutomation({
+                adopt: petDiaryAdoptEnabled,
+                feed: petDiaryFeedEnabled,
+                draw: petDiaryDrawEnabled,
+                story: petDiaryStoryEnabled,
+                seeds: petDiarySeedEnabled,
+                solar: petDiarySolarEnabled,
+                treasure: petDiaryTreasureEnabled,
+                compensation: petDiaryCompensationEnabled,
+                battle: petDiaryBattleFlag,
+                charm: petDiaryCharmEnabled
+            });
         }
     } catch (err) {
         if (!isTransientNetworkError(err)) {
@@ -654,6 +849,7 @@ function stopStarActivityClaimTimer() {
     workerScheduler.clear('star_activity_claim_interval');
     workerScheduler.clear('rain_poem_weather_renew');
     workerScheduler.clear('rain_poem_after_harvest');
+    workerScheduler.clear('pet_diary_treasure_ready');
     starActivityClaimRunning = false;
 }
 
@@ -713,9 +909,8 @@ function applyIntervalsToRuntime(intervals) {
     CONFIG.helpCheckIntervalMin = helpRange.min * 1000;
     CONFIG.helpCheckIntervalMax = helpRange.max * 1000;
 
-    const stealRange = normalizeIntervalRangeSec(iv.stealMin, iv.stealMax, 25);
-    CONFIG.stealCheckIntervalMin = stealRange.min * 1000;
-    CONFIG.stealCheckIntervalMax = stealRange.max * 1000;
+    // 偷菜巡查时机由 friend-maturity-plan 的成熟度计划动态计算（见 runScheduledStealCheck /
+    // getNextStealDelayMs），不再受用户配置的固定区间控制，此处无需处理 steal 相关字段。
 }
 
 /** 在 [minMs, maxMs] 范围内随机取一个毫秒数 */
@@ -737,10 +932,9 @@ function resetUnifiedSchedule() {
         CONFIG.helpCheckIntervalMin || 30000,
         CONFIG.helpCheckIntervalMax || 35000
     );
-    const stealDelay = randomIntervalMs(
-        CONFIG.stealCheckIntervalMin || 25000,
-        CONFIG.stealCheckIntervalMax || 30000
-    );
+    // 偷菜首轮延迟固定给一个较短的随机窗口即可，后续节奏由 runScheduledStealCheck
+    // 返回的 getNextStealDelayMs() 动态决定（根据好友作物成熟时间计算）。
+    const stealDelay = randomIntervalMs(5000, 15000);
     const accountId = String(process.env.FARM_ACCOUNT_ID || '');
     const staggerMs = [...accountId].reduce((sum, ch) => (sum * 31 + ch.charCodeAt(0)) % 3000, 0);
     const now = Date.now() + staggerMs;
@@ -1002,7 +1196,18 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
                 !prevAuto?.rain_poem_prank_use && newAuto?.rain_poem_prank_use
             ) || (
                 !prevAuto?.rain_poem_research_unlock && newAuto?.rain_poem_research_unlock
-            );
+            ) || [
+                'pet_diary_adopt',
+                'pet_diary_feed',
+                'pet_diary_draw',
+                'pet_diary_story_claim',
+                'pet_diary_seed_claim',
+                'pet_diary_solar_claim',
+                'pet_diary_treasure_open',
+                'pet_diary_compensation_claim',
+                'pet_diary_battle',
+                'pet_diary_charm_equip'
+            ].some(key => !prevAuto?.[key] && newAuto?.[key]);
             if (starClaimBecameEnabled) {
                 workerScheduler.setTimeoutTask('star_activity_claim_after_save', 2000, () => {
                     runStarActivityAutoClaims().catch(() => null);
@@ -1658,6 +1863,31 @@ async function handleApiCall(msg) {
             case 'getCharityFlowerActivity': {
                 const { getCharityFlowerActivity } = require('../services/activity');
                 result = await getCharityFlowerActivity();
+                break;
+            }
+            case 'getPetDiaryActivity': {
+                const { getPetDiaryActivity } = require('../services/activity');
+                result = await getPetDiaryActivity();
+                break;
+            }
+            case 'getPetDiary': {
+                const { getPetDiary } = require('../services/activity');
+                result = await getPetDiary();
+                break;
+            }
+            case 'operatePetDiary': {
+                const { operatePetDiary } = require('../services/activity');
+                result = await operatePetDiary(args[0], args[1]);
+                break;
+            }
+            case 'getPetDiaryRecords': {
+                const { getPetDiaryRecords } = require('../services/activity');
+                result = await getPetDiaryRecords(args[0]);
+                break;
+            }
+            case 'getPetDiaryFriend': {
+                const { getPetDiaryFriend } = require('../services/activity');
+                result = await getPetDiaryFriend(args[0]);
                 break;
             }
             case 'exchangeHeluShopItem': {

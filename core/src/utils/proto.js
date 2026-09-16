@@ -45,6 +45,7 @@ async function loadProto() {
         getResourcePath('proto', 'interactpb.proto'),
         getResourcePath('proto', 'dogpb.proto'),
         getResourcePath('proto', 'activitypb.proto'),
+        getResourcePath('proto', 'pet-diary.proto'),
         getResourcePath('proto', 'mysteryshoppb.proto'),
         getResourcePath('proto', 'acepb.proto'),
         getResourcePath('proto', 'careerpb.proto'),
@@ -162,6 +163,10 @@ async function loadProto() {
     types.ActivityGetGroupReply = root.lookupType('gamepb.activitypb.GetGroupReply');
     types.ActivityOperateRequest = root.lookupType('gamepb.activitypb.OperateRequest');
     types.ActivityOperateReply = root.lookupType('gamepb.activitypb.OperateReply');
+    // 萌宠成长日记（S3）操作协议，来自官方小程序 1.14.0.1 编码器
+    for (const name of ['PetDiaryOperateRequest', 'PetDiaryOperateReply', 'PetDiaryGetGroupReply']) {
+        types[name] = root.lookupType(`gamepb.activitypb.${name}`);
+    }
     types.ActivityRandomShopInfo = root.lookupType('gamepb.activitypb.RandomShopInfo');
     types.ActivityExchangeShopInfo = root.lookupType('gamepb.activitypb.ExchangeShopInfo');
     types.ActivityExchangeShopOperateParams = root.lookupType('gamepb.activitypb.ExchangeShopOperateParams');
@@ -180,6 +185,9 @@ async function loadProto() {
     types.ActivityListReply = root.lookupType('gamepb.activitypb.ListReply');
     types.ActivityStarRecordInfo = root.lookupType('gamepb.activitypb.StarRecordInfo');
     types.ActivityStarRecordClaimResult = root.lookupType('gamepb.activitypb.StarRecordClaimResult');
+    types.ActivityBodyPetDiary = root.lookupType('gamepb.activitypb.ActivityBodyPetDiary');
+    types.ActivityPetDiaryPhotoWall = root.lookupType('gamepb.activitypb.PetDiaryPhotoWall');
+    types.ActivityPetDiaryPhotoEntry = root.lookupType('gamepb.activitypb.PetDiaryPhotoEntry');
 
     // 天气
     types.GetWeatherStatusRequest = root.lookupType('gamepb.weatherpb.GetWeatherStatusRequest');

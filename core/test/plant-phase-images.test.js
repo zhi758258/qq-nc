@@ -48,3 +48,24 @@ test('变异植物使用专属阶段图并在缺失时回退原作物', () => {
         '/game-config/plant_images/Plant_1129003/6.png',
     );
 });
+
+test('supplemental crops resolve local seed icons and every growth phase', () => {
+    const { getPlantBySeedId, getSeedImageBySeedId } = require('../src/config/gameConfig');
+    for (const [seedId, asset, size] of [[20516, 'Crop_516', 1], [25995, 'Crop_5995', 1], [29004, 'Crop_9004', 2], [20522, 'Crop_522', 1], [20523, 'Crop_523', 1]]) {
+        const plant = getPlantBySeedId(seedId);
+        assert.equal(plant?.size, size);
+        const seedImage = getSeedImageBySeedId(seedId);
+        assert.equal(seedImage, `/game-config/seed_images_named/${seedId}_${asset}_Seed.png`);
+        const images = [seedImage];
+        assert.equal(getPlantImageByPhase(plant.id, 1), '/game-config/plant_images/common/seed.png');
+        for (let phase = 2; phase <= (size === 2 ? 7 : 6); phase += 1) {
+            const image = getPlantImageByPhase(plant.id, phase);
+            assert.equal(image, `/game-config/plant_images/${asset}/${phase}.png`);
+            images.push(image);
+        }
+        for (const image of images) {
+            const bytes = fs.readFileSync(path.join(__dirname, '..', 'src', image.replace('/game-config/', 'gameConfig/')));
+            assert.equal(bytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+        }
+    }
+});

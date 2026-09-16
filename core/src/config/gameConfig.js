@@ -38,6 +38,7 @@ const staticItemInfoMap = new Map([
     [100003, { id: 100003, name: '化肥礼包' }],
 ]);
 const staticItemImageMap = new Map([
+    [101604, '/activity/charity-flower/settlement-pack.png'],
     [1023, '/activity/star-festival/star-token.png'],
     [1024, '/activity/qixi/qixi-feather.png'],
     [301103, '/activity/qixi/qixi-dew.png'],

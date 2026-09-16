@@ -53,6 +53,46 @@ const CHARITY_FLOWER_CLAIM_SHARE_CMD = 35;
 const CHARITY_FLOWER_DONATE_ALL_CMD = 36;
 const CHARITY_FLOWER_CLAIM_REWARD_CMD = 37;
 const CHARITY_FLOWER_CLAIM_XHH_CMD = 38;
+// 萌宠日记（S3 比熊萌宠主题赛季）。协议字段与文案来自 2026-09-10 官方客户端
+// List/Operate 明文响应，详见 core/docs/pet-diary-protocol-recovery.md。
+const PET_DIARY_ACTIVITY_UID = 'SEASON_BEAR_CAMPAIGN';
+const PET_DIARY_GROUP_ACTIVITY_ID = 2026090100;
+const PET_DIARY_ACTIVITY_ID = 2026090101;       // 比熊主体，承载 ActivityNode 字段 115
+const PET_DIARY_GIFT_ACTIVITY_ID = 2026090102;  // 比熊赠礼（star_record）
+const PET_DIARY_SHOP_ACTIVITY_ID = 2026090103;  // 拾物小铺（exchange_shop）
+const PET_DIARY_START_TIME = 1789005600;
+const PET_DIARY_END_TIME = 1791820799;
+const PET_DIARY_ITEM_IDS = { cake: 1028, star: 1029 };
+const PET_DIARY_ITEM_NAMES = new Map([
+  [1028, '萌宠元气糕'], [1029, '幸运星'], [1030, '待护送宝藏'],
+]);
+
+function getPetDiaryItemName(itemId) {
+  const id = toNum(itemId);
+  if (!id) return '';
+  return PET_DIARY_ITEM_NAMES.get(id) || '';
+}
+
+function normalizePetDiaryItem(item) {
+  if (!item) return null;
+  const id = toNum(item.id);
+  const count = toNum(item.count);
+  if (!id && !count) return null;
+  return { itemId: id, count, name: getPetDiaryItemName(id) };
+}
+
+function parsePetDiaryPhotoContent(content) {
+  if (typeof content !== 'string' || !content) return { photo: '', say: '' };
+  try {
+    const parsed = JSON.parse(content);
+    return {
+      photo: String(parsed?.photo || ''),
+      say: String(parsed?.say || ''),
+    };
+  } catch {
+    return { photo: '', say: '' };
+  }
+}
 const RAIN_POEM_ITEM_NAMES = new Map([
   [1027, '雷电徽章'], [5001, '天气采集瓶'], [5002, '雷雨召唤瓶'],
   [5005, '青蛙使坏瓶'], [5006, '乌云使坏瓶'],
@@ -964,6 +1004,224 @@ async function claimCharityFlowerPublicFund() {
   if (!before.publicFund.claimable) return { ok: true, claimed: false, reason: 'not_claimable' };
   const reply = await operateActivityReply(CHARITY_FLOWER_ACTIVITY_ID, CHARITY_FLOWER_CLAIM_XHH_CMD, { charityFlowerClaimXhh: true });
   return { ok: true, claimed: true, awards: (reply?.charity_flower_claim_xhh?.awards || []).map(normalizeCoreItem) };
+}
+
+// ---- 萌宠日记（S3 比熊萌宠赛季）—— 只读状态查询 ----
+// 本节只做只读归一化：活动体字段号已由官方明文响应确认，子字段语义为推断，
+// 因此不在此处臆造 Operate 命令字。协议证据见 core/docs/pet-diary-protocol-recovery.md。
+
+function isPetDiaryWithinWindow(nowSeconds) {
+  const now = typeof nowSeconds === 'number' && Number.isFinite(nowSeconds)
+    ? Math.floor(nowSeconds)
+    : Math.floor(Date.now() / 1000);
+  return now >= PET_DIARY_START_TIME && now <= PET_DIARY_END_TIME;
+}
+
+function normalizePetDiaryPet(pet) {
+  return {
+    stage: toNum(pet?.stage),
+    progress: toNum(pet?.progress),
+    state: toNum(pet?.state),
+  };
+}
+
+function normalizePetDiaryEscort(escort) {
+  return {
+    guard: toNum(escort?.guard),
+    cake: normalizePetDiaryItem(escort?.cake),
+  };
+}
+
+function normalizePetDiaryPouch(pouch) {
+  const slot = pouch?.slot || {};
+  return {
+    flag: String(pouch?.flag || ''),
+    state: toNum(pouch?.state),
+    slot: {
+      id: toNum(slot?.id),
+      type: toNum(slot?.type),
+      count: toNum(slot?.count),
+    },
+  };
+}
+
+function normalizePetDiaryPhotoWall(wall) {
+  const entries = Array.isArray(wall?.entries) ? wall.entries : [];
+  const slots = entries
+    .map((entry) => {
+      const content = parsePetDiaryPhotoContent(entry?.content);
+      const unlocked = toNum(entry?.unlocked) > 0;
+      const claimed = toNum(entry?.claimed) > 0;
+      return {
+        id: toNum(entry?.id),
+        unlocked,
+        claimed,
+        claimable: unlocked && !claimed,
+        progress: toNum(entry?.progress),
+        photo: content.photo,
+        say: content.say,
+      };
+    })
+    .filter((slot) => slot.id > 0 || slot.unlocked);
+
+  return {
+    slots,
+    totalCount: slots.length,
+    unlockedCount: slots.filter((slot) => slot.unlocked).length,
+    claimedCount: slots.filter((slot) => slot.claimed).length,
+    claimableCount: slots.filter((slot) => slot.claimable).length,
+  };
+}
+
+function normalizePetDiaryShop(shopNode) {
+  const shop = shopNode?.exchange_shop
+    || shopNode?.exchangeShop
+    || shopNode?.activity?.exchange_shop
+    || shopNode?.activity?.exchangeShop
+    || null;
+  const items = Array.isArray(shop?.items) ? shop.items : [];
+  return items
+    .map(normalizeExchangeShopItem)
+    .filter(Boolean)
+    .map((item) => ({
+      ...item,
+      currencyName: item.currencyId === PET_DIARY_ITEM_IDS.star ? '幸运星' : item.currencyName,
+    }));
+}
+
+function emptyPetDiaryActivity(warning) {
+  return {
+    uid: PET_DIARY_ACTIVITY_UID,
+    title: 'S3 萌宠',
+    activityId: PET_DIARY_ACTIVITY_ID,
+    groupActivityId: PET_DIARY_GROUP_ACTIVITY_ID,
+    startTime: PET_DIARY_START_TIME,
+    endTime: PET_DIARY_END_TIME,
+    active: false,
+    pet: normalizePetDiaryPet(null),
+    home: { state: 0 },
+    escort: normalizePetDiaryEscort(null),
+    photoWall: normalizePetDiaryPhotoWall(null),
+    pouch: normalizePetDiaryPouch(null),
+    gifts: normalizeStarRecord(null),
+    shop: [],
+    balances: { cake: 0, star: 0 },
+    items: { cake: PET_DIARY_ITEM_IDS.cake, star: PET_DIARY_ITEM_IDS.star },
+    summary: {
+      photoUnlocked: 0,
+      photoTotal: 0,
+      photoClaimable: 0,
+      giftClaimable: 0,
+      shopCount: 0,
+    },
+    warning: warning || '',
+  };
+}
+
+// ==================== 萌宠成长日记（S3）====================
+// 上游 activity-center/pet-diary.ts 的本地装配。旧的只读 getPetDiaryActivity 暂时保留，
+// 待前端切到新接口后再移除，避免一次性改动过大。
+const petDiaryHelpers = require('./activity-center-helpers');
+const { createPetDiaryService } = require('./activity-pet-diary');
+
+let petDiaryServiceInstance = null;
+
+function getPetDiaryService() {
+  if (petDiaryServiceInstance) return petDiaryServiceInstance;
+  const { getServerTimeSec } = require('../utils/utils');
+  petDiaryServiceInstance = createPetDiaryService({
+    types,
+    sendMsgAsync,
+    getBag,
+    getBagItems,
+    getServerTimeSec,
+    itemDto: petDiaryHelpers.itemDto,
+    int64String: petDiaryHelpers.int64String,
+    int64Number: petDiaryHelpers.int64Number,
+    textContent: petDiaryHelpers.textContent,
+    businessError: petDiaryHelpers.businessError,
+    positiveDecimal: petDiaryHelpers.positiveDecimal,
+    serializeMutation: petDiaryHelpers.serializeMutation,
+    // 本地节令模型字段为 claimable / 数字 id，适配成上游期望的 canClaim / 字符串 id
+    getCurrentSolarTerms: async () => {
+      const info = await getSolarTermsInfo();
+      return {
+        ...info,
+        terms: (Array.isArray(info?.terms) ? info.terms : []).map(term => ({
+          ...term,
+          id: String(term.id),
+          canClaim: term.claimable === true,
+          // 上游页面按 name / statusCode 取值，本地模型是 title / status，补别名避免改页面。
+          // statusCode 必须是字符串：页面里是 term.statusCode === '1' / '3' 的严格比较。
+          name: String(term.title || ''),
+          statusCode: String(term.status),
+        })),
+      };
+    },
+    claimSolarTerm: async (termId) => claimSolarTermsReward(Number(termId)),
+  });
+  return petDiaryServiceInstance;
+}
+
+const getPetDiary = () => getPetDiaryService().getPetDiary();
+const operatePetDiary = (action, params, options) => getPetDiaryService().operatePetDiary(action, params, options);
+const getPetDiaryRecords = (kind) => getPetDiaryService().getPetDiaryRecords(kind);
+const getPetDiaryFriend = (gid) => getPetDiaryService().getPetDiaryFriend(gid);
+
+async function getPetDiaryActivity() {
+  if (!getUserState()) {
+    return emptyPetDiaryActivity('runtime connection is not open');
+  }
+
+  const listed = await listActivityGroups();
+  const rootNode = findActivityNodeById(listed?.groups, PET_DIARY_ACTIVITY_ID);
+  if (!rootNode) {
+    throw new Error('未在活动列表中找到“萌宠日记”');
+  }
+
+  const giftNode = findActivityNodeById(listed?.groups, PET_DIARY_GIFT_ACTIVITY_ID);
+  const shopNode = findActivityNodeById(listed?.groups, PET_DIARY_SHOP_ACTIVITY_ID);
+  const body = rootNode.pet_diary || rootNode.petDiary || {};
+  const startTime = toNum(rootNode?.activity?.start_time) || PET_DIARY_START_TIME;
+  const endTime = toNum(rootNode?.activity?.end_time) || PET_DIARY_END_TIME;
+
+  const [cake, star] = await Promise.all([
+    getBagItemCount(PET_DIARY_ITEM_IDS.cake).catch(() => 0),
+    getBagItemCount(PET_DIARY_ITEM_IDS.star).catch(() => 0),
+  ]);
+
+  const photoWall = normalizePetDiaryPhotoWall(body?.photo_wall || body?.photoWall);
+  const pouch = normalizePetDiaryPouch(body?.pouch);
+  const gifts = normalizeStarRecord(giftNode);
+  const shop = normalizePetDiaryShop(shopNode);
+
+  return {
+    uid: PET_DIARY_ACTIVITY_UID,
+    title: String(rootNode?.activity?.title || 'S3 萌宠'),
+    activityId: PET_DIARY_ACTIVITY_ID,
+    groupActivityId: PET_DIARY_GROUP_ACTIVITY_ID,
+    giftActivityId: PET_DIARY_GIFT_ACTIVITY_ID,
+    shopActivityId: PET_DIARY_SHOP_ACTIVITY_ID,
+    startTime,
+    endTime,
+    active: isPetDiaryWithinWindow(),
+    pet: normalizePetDiaryPet(body?.pet),
+    home: { state: toNum(body?.home?.state) },
+    escort: normalizePetDiaryEscort(body?.escort),
+    photoWall,
+    pouch,
+    gifts,
+    shop,
+    balances: { cake, star },
+    items: { cake: PET_DIARY_ITEM_IDS.cake, star: PET_DIARY_ITEM_IDS.star },
+    summary: {
+      photoUnlocked: photoWall.unlockedCount,
+      photoTotal: photoWall.totalCount,
+      photoClaimable: photoWall.claimableCount,
+      giftClaimable: gifts.claimableCount,
+      shopCount: shop.length,
+    },
+  };
 }
 
 function normalizeQingmeiPreviewResult(result) {
@@ -2981,6 +3239,12 @@ module.exports = {
   RAIN_POEM_RESEARCH_ACTIVITY_ID,
   RAIN_POEM_TASK_ACTIVITY_ID,
   CHARITY_FLOWER_ACTIVITY_ID,
+  PET_DIARY_ACTIVITY_ID,
+  PET_DIARY_GIFT_ACTIVITY_ID,
+  PET_DIARY_SHOP_ACTIVITY_ID,
+  PET_DIARY_START_TIME,
+  PET_DIARY_END_TIME,
+  PET_DIARY_ITEM_IDS,
   HELU_SUB_ACTIVITY_KEYS,
   NANGUA_SHOP_BUY_CMD,
   NANGUA_SHOP_REFRESH_CMD,
@@ -3023,6 +3287,16 @@ module.exports = {
   donateCharityFlowerLove,
   claimCharityFlowerReward,
   claimCharityFlowerPublicFund,
+  getPetDiaryActivity,
+  getPetDiary,
+  operatePetDiary,
+  getPetDiaryRecords,
+  getPetDiaryFriend,
+  normalizePetDiaryPhotoWall,
+  normalizePetDiaryEscort,
+  normalizePetDiaryPouch,
+  normalizePetDiaryPet,
+  isPetDiaryWithinWindow,
   getSeasonPassport,
   claimSeasonPassportRewards,
   getSolarTermsInfo,

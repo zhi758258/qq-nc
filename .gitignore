@@ -26,3 +26,10 @@ temp/
 !.env.compose.example
 *.log
 /.pnpm-store/
+
+# 配置合并脚本产生的备份
+*.bak
+
+# Python 脚本运行产生的字节码
+__pycache__/
+*.pyc

@@ -28,6 +28,16 @@ export interface AutomationConfig {
   charity_flower_donate?: boolean
   charity_flower_reward_claim?: boolean
   charity_flower_public_fund_claim?: boolean
+  pet_diary_adopt?: boolean
+  pet_diary_feed?: boolean
+  pet_diary_draw?: boolean
+  pet_diary_story_claim?: boolean
+  pet_diary_seed_claim?: boolean
+  pet_diary_solar_claim?: boolean
+  pet_diary_treasure_open?: boolean
+  pet_diary_compensation_claim?: boolean
+  pet_diary_charm_equip?: boolean
+  pet_diary_battle?: boolean
   sell?: boolean
   fertilizer_gift?: boolean
   fertilizer_buy_organic?: boolean
@@ -58,8 +68,6 @@ export interface IntervalsConfig {
   friendMax?: number
   helpMin?: number
   helpMax?: number
-  stealMin?: number
-  stealMax?: number
 }
 
 export interface FriendQuietHoursConfig {
@@ -112,7 +120,6 @@ export interface SettingsState {
   autoCodeRefresh: AutoCodeRefreshConfig
   ui: UIConfig
   offlineReminder: OfflineConfig
-  stealDelaySeconds: number
   fertilizerBuyOrganicCount: number
   fertilizerBuyOrganicThresholdHours: number
   fertilizerBuyNormalCount: number
@@ -169,7 +176,6 @@ export const useSettingStore = defineStore('setting', () => {
     autoCodeRefresh: createDefaultAutoCodeRefresh(),
     ui: {},
     offlineReminder: createDefaultOfflineReminder(),
-    stealDelaySeconds: 0,
     fertilizerBuyOrganicCount: 10,
     fertilizerBuyOrganicThresholdHours: 10,
     fertilizerBuyNormalCount: 10,
@@ -201,7 +207,6 @@ export const useSettingStore = defineStore('setting', () => {
       autoCodeRefresh: createDefaultAutoCodeRefresh(),
       ui: {},
       offlineReminder: createDefaultOfflineReminder(),
-      stealDelaySeconds: 0,
       fertilizerBuyOrganicCount: 10,
       fertilizerBuyOrganicThresholdHours: 10,
       fertilizerBuyNormalCount: 10,
@@ -239,7 +244,6 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.ui = d.ui || {}
         settings.value.autoAcceptFriendMinLevel = d.autoAcceptFriendMinLevel ?? 0
         settings.value.offlineReminder = normalizeOfflineReminder(d.offlineReminder)
-        settings.value.stealDelaySeconds = d.stealDelaySeconds ?? 0
         settings.value.fertilizerBuyOrganicCount = d.fertilizerBuyOrganicCount ?? 10
         settings.value.fertilizerBuyOrganicThresholdHours = d.fertilizerBuyOrganicThresholdHours ?? 10
         settings.value.fertilizerBuyNormalCount = d.fertilizerBuyNormalCount ?? 10
@@ -273,7 +277,6 @@ export const useSettingStore = defineStore('setting', () => {
         autoCodeRefresh: newSettings.autoCodeRefresh,
         intervals: newSettings.intervals,
         friendQuietHours: newSettings.friendQuietHours,
-        stealDelaySeconds: newSettings.stealDelaySeconds ?? 0,
         fertilizerBuyOrganicCount: newSettings.fertilizerBuyOrganicCount ?? 10,
         fertilizerBuyOrganicThresholdHours: newSettings.fertilizerBuyOrganicThresholdHours ?? 10,
         fertilizerBuyNormalCount: newSettings.fertilizerBuyNormalCount ?? 10,

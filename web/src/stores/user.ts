@@ -211,6 +211,16 @@ export const useUserStore = defineStore('user', () => {
     return res.data
   }
 
+  async function exportUserBackup() {
+    const res = await api.get('/api/admin/users/backup/export')
+    return res.data
+  }
+
+  async function importUserBackup(backup: unknown, mode: 'skip' | 'overwrite') {
+    const res = await api.post('/api/admin/users/backup/import', { backup, mode, confirmed: true })
+    return res.data
+  }
+
   async function getLoginLogs() {
     const res = await api.get('/api/admin/login-logs')
     return res.data
@@ -287,6 +297,8 @@ export const useUserStore = defineStore('user', () => {
     getAllUsers,
     getUserStats,
     cleanupExpiredUsers,
+    exportUserBackup,
+    importUserBackup,
     getLoginLogs,
     clearLoginLogs,
     editUser,

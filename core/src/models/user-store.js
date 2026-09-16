@@ -1078,6 +1078,236 @@ function clearExpiredClaimRecords() {
 }
 
 /* ------------------------------------------------------------------------- *
+ * 用户数据备份 / 恢复
+ * ------------------------------------------------------------------------- */
+
+const BACKUP_FORMAT = 'qq-farm-bot-user-backup';
+const BACKUP_VERSION = 1;
+const BACKUP_MODES = ['skip', 'overwrite'];
+const BACKUP_ROLES = ['user', 'admin', 'super_admin'];
+const HEX_RE = /^[0-9a-f]+$/i;
+const BACKUP_TEXT_MAX = 200;
+
+function buildBackupCard(raw) {
+  if (!raw || typeof raw !== 'object') return { ok: false, error: '卡密记录格式不正确' };
+  const code = String(raw.code || '').trim();
+  if (!code) return { ok: false, error: '卡密编号为空' };
+  if (code.length > 128) return { ok: false, error: '卡密编号过长' };
+  const days = Number(raw.days);
+  const card = {
+    code,
+    type: normalizeCardType(raw.type),
+    days: Number.isFinite(days) ? days : 0,
+    description: String(raw.description || '').slice(0, BACKUP_TEXT_MAX),
+    status: String(raw.status || 'unused').slice(0, 32) || 'unused',
+    enabled: raw.enabled !== false,
+    createdAt: String(raw.createdAt || '').slice(0, 64) || nowIso(),
+    usedBy: String(raw.usedBy || '').slice(0, 64),
+    usedAt: String(raw.usedAt || '').slice(0, 64),
+  };
+  if (raw.expiresAt) card.expiresAt = String(raw.expiresAt).slice(0, 64);
+  return { ok: true, data: card };
+}
+
+function buildBackupUser(raw) {
+  if (!raw || typeof raw !== 'object') return { ok: false, error: '用户记录格式不正确' };
+  const username = String(raw.username || '').trim();
+  if (!username) return { ok: false, error: '用户名为空' };
+  if (!USERNAME_RE.test(username)) return { ok: false, error: '用户名只能包含字母、数字和下划线，长度3-32位' };
+  if (RESERVED_USERNAMES.some(name => username.toLowerCase() === name.toLowerCase())) {
+    return { ok: false, error: '该用户名为系统保留用户名' };
+  }
+  const passwordSalt = String(raw.passwordSalt || '').trim();
+  const passwordHash = String(raw.passwordHash || '').trim();
+  if (!passwordSalt || !passwordHash) return { ok: false, error: '缺少密码凭据，无法恢复登录' };
+  if (!HEX_RE.test(passwordSalt) || !HEX_RE.test(passwordHash)) {
+    return { ok: false, error: '密码凭据格式不正确' };
+  }
+  const rawQq = String(raw.qq || '').trim();
+  const qqCheck = rawQq ? normalizeQq(rawQq) : { ok: true, data: '' };
+  const accountLimit = Number(raw.accountLimit);
+  return {
+    ok: true,
+    data: {
+      username,
+      qq: qqCheck.ok ? qqCheck.data : '',
+      passwordSalt,
+      passwordHash,
+      role: BACKUP_ROLES.includes(raw.role) ? raw.role : 'user',
+      accountLimit: Number.isFinite(accountLimit) ? Math.max(0, accountLimit) : DEFAULT_ACCOUNT_LIMIT,
+      cardCode: String(raw.cardCode || '').trim().slice(0, 128),
+      note: String(raw.note || '').slice(0, 500),
+      mustChangePassword: raw.mustChangePassword === true,
+      createdAt: String(raw.createdAt || '').slice(0, 64) || nowIso(),
+    },
+  };
+}
+
+function normalizeBackupPayload(backup) {
+  if (!backup || typeof backup !== 'object') return { ok: false, error: '备份文件格式不正确' };
+  if (backup.format && backup.format !== BACKUP_FORMAT) {
+    return { ok: false, error: '备份文件类型不匹配' };
+  }
+  if (!Array.isArray(backup.users)) return { ok: false, error: '备份文件缺少用户列表' };
+
+  const users = [];
+  const invalidUsers = [];
+  const seenUsernames = new Set();
+  for (const raw of backup.users) {
+    const built = buildBackupUser(raw);
+    if (!built.ok) {
+      invalidUsers.push({ username: String((raw && raw.username) || ''), reason: built.error });
+      continue;
+    }
+    const key = built.data.username.toLowerCase();
+    if (seenUsernames.has(key)) {
+      invalidUsers.push({ username: built.data.username, reason: '备份文件内用户名重复' });
+      continue;
+    }
+    seenUsernames.add(key);
+    users.push(built.data);
+  }
+
+  const cards = [];
+  const invalidCards = [];
+  const seenCardCodes = new Set();
+  for (const raw of Array.isArray(backup.cards) ? backup.cards : []) {
+    const built = buildBackupCard(raw);
+    if (!built.ok) {
+      invalidCards.push({ code: String((raw && raw.code) || ''), reason: built.error });
+      continue;
+    }
+    if (seenCardCodes.has(built.data.code)) {
+      invalidCards.push({ code: built.data.code, reason: '备份文件内卡密重复' });
+      continue;
+    }
+    seenCardCodes.add(built.data.code);
+    cards.push(built.data);
+  }
+
+  if (users.length === 0 && cards.length === 0) {
+    return { ok: false, error: '备份文件没有可导入的记录' };
+  }
+  return { ok: true, data: { users, cards, invalidUsers, invalidCards } };
+}
+
+/** 导出可备份的用户账号与卡密数据 */
+function exportUserBackup() {
+  const users = loadUsers();
+  const cards = loadCards();
+  return {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    exportedAt: nowIso(),
+    counts: { users: users.length, cards: cards.length },
+    users,
+    cards,
+  };
+}
+
+/**
+ * 导入用户备份。
+ * @param {object} options
+ * @param {object} options.backup 备份数据
+ * @param {'skip'|'overwrite'} [options.mode] 同名记录处理方式
+ * @param {string[]} [options.protectedUsernames] 禁止被覆盖的用户名（如当前登录账号）
+ */
+function importUserBackup({ backup, mode = 'skip', protectedUsernames = [] } = {}) {
+  if (!BACKUP_MODES.includes(mode)) return { ok: false, error: '导入模式不正确' };
+  const parsed = normalizeBackupPayload(backup);
+  if (!parsed.ok) return parsed;
+
+  const { users: incomingUsers, cards: incomingCards, invalidUsers, invalidCards } = parsed.data;
+  const protectedSet = new Set(
+    (Array.isArray(protectedUsernames) ? protectedUsernames : [])
+      .map(name => String(name || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  const users = loadUsers();
+  const userIndex = new Map();
+  users.forEach((user, index) => {
+    if (user && user.username) userIndex.set(String(user.username).toLowerCase(), index);
+  });
+
+  let added = 0;
+  let overwritten = 0;
+  let skipped = 0;
+  const protectedSkipped = [];
+
+  for (const incoming of incomingUsers) {
+    const key = incoming.username.toLowerCase();
+    const existingIndex = userIndex.get(key);
+    if (existingIndex === undefined) {
+      users.push(incoming);
+      userIndex.set(key, users.length - 1);
+      added += 1;
+      continue;
+    }
+    if (mode === 'skip') {
+      skipped += 1;
+      continue;
+    }
+    if (protectedSet.has(key)) {
+      skipped += 1;
+      protectedSkipped.push({ username: incoming.username, reason: '当前登录账号受保护，未覆盖' });
+      continue;
+    }
+    users[existingIndex] = incoming;
+    overwritten += 1;
+  }
+
+  if (!users.some(user => user && user.role === 'super_admin')) {
+    return { ok: false, error: '导入后不会保留任何超级管理员，已取消导入' };
+  }
+
+  const cards = loadCards();
+  const cardIndex = new Map();
+  cards.forEach((card, index) => {
+    if (card && card.code) cardIndex.set(String(card.code).trim(), index);
+  });
+
+  let cardsAdded = 0;
+  let cardsOverwritten = 0;
+  let cardsSkipped = 0;
+
+  for (const incoming of incomingCards) {
+    const existingIndex = cardIndex.get(incoming.code);
+    if (existingIndex === undefined) {
+      cards.push(incoming);
+      cardIndex.set(incoming.code, cards.length - 1);
+      cardsAdded += 1;
+      continue;
+    }
+    if (mode === 'skip') {
+      cardsSkipped += 1;
+      continue;
+    }
+    cards[existingIndex] = incoming;
+    cardsOverwritten += 1;
+  }
+
+  saveCards(cards);
+  saveUsers(users);
+
+  return {
+    ok: true,
+    data: {
+      mode,
+      added,
+      overwritten,
+      skipped,
+      cardsAdded,
+      cardsOverwritten,
+      cardsSkipped,
+      invalidUsers,
+      invalidCards,
+      protectedSkipped,
+    },
+  };
+}
+
+/* ------------------------------------------------------------------------- *
  * 初始化与导出
  * ------------------------------------------------------------------------- */
 
@@ -1133,6 +1363,9 @@ module.exports = {
   claimCardByUA,
   getCardClaimRecords,
   clearExpiredClaimRecords,
+  // 用户数据备份
+  exportUserBackup,
+  importUserBackup,
   // 默认管理员信息（只读，勿修改）
   defaultAdmin: DEFAULT_ADMIN,
 };

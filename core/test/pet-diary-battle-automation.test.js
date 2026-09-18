@@ -86,6 +86,35 @@ test('empty shared cache is re-read next interval', async () => {
     await f.run(); f.advance(300000); await f.run(); assert.equal(reads, 2);
 });
 
+test('unhealthy gateway skips GetGroup and friend scans', async () => {
+    let petReads = 0;
+    const f = fixture({
+        healthy: () => false,
+        getPet: async () => { petReads++; return { active: true }; },
+    });
+    await f.run();
+    assert.equal(petReads, 0);
+    assert.equal(f.scans.length, 0);
+    assert.ok(f.reports.some(([message]) => message.includes('网关不健康')));
+});
+
+test('gateway becoming unhealthy aborts remaining scans', async () => {
+    let ok = true;
+    let friendReads = 0;
+    const f = fixture({
+        healthy: () => ok,
+        getFriend: async gid => {
+            friendReads++;
+            ok = false;
+            return { gid, treasures: [{ id: 't', status: 2, endTime: 9999999,
+                previews: [{ challengeId: '80101', canStart: true }] }] };
+        },
+    });
+    await f.run();
+    assert.equal(friendReads, 1);
+    assert.equal(f.actions.length, 0);
+});
+
 
 test('uses owned intermediate and advanced books, preferring lower tiers with valid previews', async () => {
     for (const ids of [['80101', '80102', '80103'], ['80102', '80103'], ['80103']]) {

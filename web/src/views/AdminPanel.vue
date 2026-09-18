@@ -14,6 +14,7 @@ const EDGE_RE = /Edg\/([\d.]+)/
 const CHROME_RE = /Chrome\/([\d.]+)/
 const FIREFOX_RE = /Firefox\/([\d.]+)/
 const SAFARI_VERSION_RE = /Version\/([\d.]+)/
+const QQ_RE = /^\d{5,11}$/
 
 const userStore = useUserStore()
 const toast = useToastStore()
@@ -432,6 +433,8 @@ function toggleSelectCard(code: string) {
 interface UserInfo {
   username: string
   role: string
+  qq?: string
+  note?: string
   card: UserCard | null
   accountLimit: number
 }
@@ -439,6 +442,7 @@ interface UserInfo {
 interface EditForm {
   newUsername: string
   password: string
+  qq: string
   accountLimit: number
   expiresAt: string
   isPermanent: boolean
@@ -451,6 +455,7 @@ const selectedUser = ref<UserInfo | null>(null)
 const editForm = ref<EditForm>({
   newUsername: '',
   password: '',
+  qq: '',
   accountLimit: 2,
   expiresAt: '',
   isPermanent: false,
@@ -694,6 +699,7 @@ function openEditModal(user: UserInfo) {
   editForm.value = {
     newUsername: user.username,
     password: '',
+    qq: user.qq || '',
     accountLimit: user.accountLimit || 2,
     expiresAt: user.card?.expiresAt ? formatDateTimeLocal(user.card.expiresAt) : '',
     isPermanent: user.card?.days === -1,
@@ -733,6 +739,19 @@ async function handleEdit() {
 
     if (editForm.value.password) {
       updateData.password = editForm.value.password
+    }
+
+    const qqValue = editForm.value.qq.trim()
+    if (qqValue && !QQ_RE.test(qqValue)) {
+      toast.error('QQ号格式不正确，应为5-11位数字')
+      return
+    }
+    if (qqValue !== (selectedUser.value.qq || '')) {
+      if (!qqValue) {
+        toast.error('QQ号不能为空')
+        return
+      }
+      updateData.qq = qqValue
     }
 
     const res = await api.post(`/api/admin/users/${selectedUser.value.username}/edit`, updateData)
@@ -1394,6 +1413,9 @@ onMounted(() => {
                       用户名
                     </th>
                     <th class="px-3 py-2 text-left text-xs text-gray-500 font-medium uppercase dark:text-gray-300">
+                      QQ
+                    </th>
+                    <th class="px-3 py-2 text-left text-xs text-gray-500 font-medium uppercase dark:text-gray-300">
                       角色
                     </th>
                     <th class="px-3 py-2 text-left text-xs text-gray-500 font-medium uppercase dark:text-gray-300">
@@ -1417,6 +1439,9 @@ onMounted(() => {
                   <tr v-for="user in users" :key="user.username">
                     <td class="whitespace-nowrap px-3 py-2 text-sm text-gray-900 font-medium dark:text-white">
                       {{ user.username }}
+                    </td>
+                    <td class="whitespace-nowrap px-3 py-2 text-sm text-gray-900 font-mono dark:text-white">
+                      {{ user.qq || '-' }}
                     </td>
                     <td class="whitespace-nowrap px-3 py-2 text-sm text-gray-900 dark:text-white">
                       <span
@@ -1474,7 +1499,7 @@ onMounted(() => {
                     </td>
                   </tr>
                   <tr v-if="users.length === 0">
-                    <td colspan="8" class="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
+                    <td colspan="9" class="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
                       暂无用户
                     </td>
                   </tr>
@@ -1503,6 +1528,18 @@ onMounted(() => {
                   />
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                     用户名只能包含字母、数字和下划线，长度3-32位
+                  </p>
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm text-gray-700 font-medium dark:text-gray-300">
+                    绑定QQ
+                  </label>
+                  <BaseInput
+                    v-model="editForm.qq"
+                    placeholder="用户注册时绑定的QQ号"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    用于QQ群验证，5-11位数字
                   </p>
                 </div>
                 <div>

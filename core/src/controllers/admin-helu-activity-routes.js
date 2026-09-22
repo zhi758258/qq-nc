@@ -49,6 +49,53 @@ function registerAdminHeluActivityRoutes({
     } catch (err) { sendProviderError(res, err); }
   });
 
+  app.get('/api/activity/pet-diary', async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, '获取萌宠日记失败: 账号未运行')) return;
+      res.json({ ok: true, activity: await provider.getPetDiaryActivity(accountId) });
+    } catch (err) { sendProviderError(res, err); }
+  });
+
+  // 萌宠成长日记（S3）完整状态与操作。上游为 /api/activity-center/pet-diary，
+  // 本地统一挂在 /api/activity/ 前缀下。
+  app.get('/api/activity/pet-diary/state', async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, '获取萌宠成长日记失败: 账号未运行')) return;
+      res.json({ ok: true, data: await provider.getPetDiary(accountId) });
+    } catch (err) { sendProviderError(res, err); }
+  });
+
+  app.get('/api/activity/pet-diary/records', async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, '获取萌宠日记记录失败: 账号未运行')) return;
+      res.json({ ok: true, data: await provider.getPetDiaryRecords(accountId, req.query.kind) });
+    } catch (err) { sendProviderError(res, err); }
+  });
+
+  app.get('/api/activity/pet-diary/friend', async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, '获取好友宝藏失败: 账号未运行')) return;
+      res.json({ ok: true, data: await provider.getPetDiaryFriend(accountId, req.query.gid) });
+    } catch (err) { sendProviderError(res, err); }
+  });
+
+  app.post('/api/activity/pet-diary/operate', async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, '萌宠日记操作失败: 账号未运行')) return;
+      res.json({ ok: true, data: await provider.operatePetDiary(accountId, req.body?.action, req.body?.params) });
+    } catch (err) { sendProviderError(res, err); }
+  });
+
   app.post('/api/activity/rain-poem/bottle/buy', async (req, res) => {
     const accountId = getAuthorizedAccountId(req, res, routeContext);
     if (!accountId) return;

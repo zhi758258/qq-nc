@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BagSeedPriority from '@/components/settings/BagSeedPriority.vue'
 import StrategyTimingPanel from '@/components/settings/StrategyTimingPanel.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
@@ -12,16 +13,14 @@ interface SelectOption<T = string | number> {
 interface StrategySettings {
   plantingStrategy: string
   prioritize2x2Crops: boolean
+  prioritizeGrowthTasks: boolean
   bagSeedPriority: number[]
   bagSeedFallbackStrategy: string
-  stealDelaySeconds: number
   intervals: {
     farmMin: number
     farmMax: number
     helpMin: number
     helpMax: number
-    stealMin: number
-    stealMax: number
   }
   friendQuietHours: {
     enabled: boolean
@@ -41,7 +40,7 @@ withDefaults(defineProps<{
   title?: string
   saveLabel?: string
   showActions?: boolean
-  timingSection?: 'all' | 'planting' | 'friends' | 'steal'
+  timingSection?: 'all' | 'planting' | 'friends'
 }>(), {
   title: '策略设置',
   saveLabel: '保存策略设置',
@@ -54,6 +53,14 @@ const emit = defineEmits<{
 }>()
 
 const settings = defineModel<StrategySettings>('settings', { required: true })
+
+function selectPlantingStrategy(value: string | number | undefined) {
+  if (value === undefined)
+    return
+  const strategy = String(value)
+  settings.value.plantingStrategy = strategy
+  settings.value.prioritizeGrowthTasks = strategy === 'task_priority'
+}
 
 function selectBagFallbackStrategy(value: string | number) {
   settings.value.bagSeedFallbackStrategy = String(value)
@@ -92,13 +99,14 @@ function isBagFallbackStrategySelected(value: string | number) {
           v-model="settings.plantingStrategy"
           label="种植策略"
           :options="plantingStrategyOptions"
+          @update:model-value="selectPlantingStrategy"
         />
         <div class="flex flex-col gap-1.5">
           <label class="text-sm text-gray-700 font-medium dark:text-gray-300">
-            {{ settings.plantingStrategy === 'bag_priority' ? '第二优先策略预览' : '策略选种预览' }}
+            {{ ['bag_priority', 'task_priority'].includes(settings.plantingStrategy) ? '第二优先策略预览' : '策略选种预览' }}
           </label>
           <div
-            class="w-full flex items-center justify-between border border-dashed border-gray-200 rounded-lg bg-gray-50 px-3 py-2 text-gray-500 dark:border-gray-600 dark:bg-gray-800/50 dark:text-gray-400"
+            class="w-full flex items-center justify-between border border-gray-200 rounded-lg border-dashed bg-gray-50 px-3 py-2 text-gray-500 dark:border-gray-600 dark:bg-gray-800/50 dark:text-gray-400"
             title="根据当前策略自动匹配，仅供预览"
           >
             <span class="truncate">{{ strategyPreviewLabel ?? '加载中...' }}</span>
@@ -107,11 +115,13 @@ function isBagFallbackStrategySelected(value: string | number) {
         </div>
       </div>
 
-      <div v-if="settings.plantingStrategy === 'bag_priority'" class="flex flex-col gap-2">
+      <BagSeedPriority v-if="settings.plantingStrategy === 'bag_priority'" :key="currentAccountId" v-model="settings.bagSeedPriority" :account-id="currentAccountId" />
+
+      <div v-if="['bag_priority', 'task_priority'].includes(settings.plantingStrategy)" class="flex flex-col gap-2">
         <label class="text-sm text-gray-700 font-medium dark:text-gray-300">
           第二优先策略
         </label>
-        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <div class="grid grid-cols-1 gap-2 lg:grid-cols-3 sm:grid-cols-2">
           <button
             v-for="option in bagFallbackStrategyOptions"
             :key="option.value"
@@ -125,7 +135,7 @@ function isBagFallbackStrategySelected(value: string | number) {
           >
             <span class="min-w-0 break-words font-medium leading-5">{{ option.label }}</span>
             <span
-              class="grid h-5 w-5 shrink-0 place-items-center rounded-full border text-xs transition"
+              class="grid h-5 w-5 shrink-0 place-items-center border rounded-full text-xs transition"
               :class="isBagFallbackStrategySelected(option.value)
                 ? 'border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white'
                 : 'border-gray-300 text-transparent dark:border-gray-600'"

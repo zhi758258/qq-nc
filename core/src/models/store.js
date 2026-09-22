@@ -208,9 +208,11 @@ function deleteAccountCaches(accountId) {
 
 const ALLOWED_PLANTING_STRATEGIES = [
     'level', 'max_exp', 'max_fert_exp',
-    'max_profit', 'max_fert_profit', 'bag_priority'
+    'max_profit', 'max_fert_profit', 'bag_priority', 'task_priority'
 ];
-const ALLOWED_BAG_SEED_FALLBACK_STRATEGIES = ALLOWED_PLANTING_STRATEGIES.filter(s => s !== 'bag_priority');
+const ALLOWED_BAG_SEED_FALLBACK_STRATEGIES = ALLOWED_PLANTING_STRATEGIES.filter(
+    s => s !== 'bag_priority' && s !== 'task_priority'
+);
 const PUSHOO_CHANNELS = new Set([
     'webhook', 'qmsg', 'serverchan', 'pushplus', 'pushplushxtrip',
     'dingtalk', 'wecom', 'bark', 'gocqhttp', 'onebot', 'atri',
@@ -271,6 +273,16 @@ const DEFAULT_AUTOMATION = {
     charity_flower_donate: false,
     charity_flower_reward_claim: false,
     charity_flower_public_fund_claim: false,
+    pet_diary_adopt: false,
+    pet_diary_feed: false,
+    pet_diary_draw: false,
+    pet_diary_story_claim: false,
+    pet_diary_seed_claim: false,
+    pet_diary_solar_claim: false,
+    pet_diary_treasure_open: false,
+    pet_diary_compensation_claim: false,
+    pet_diary_charm_equip: false,
+    pet_diary_battle: false,
     fertilizer_gift: false,
     fertilizer_buy_organic: false,
     fertilizer_buy_normal: false,
@@ -313,6 +325,18 @@ const RAIN_POEM_AUTOMATION_KEYS = [
     'rain_poem_prank_use',
     'rain_poem_research_unlock'
 ];
+const PET_DIARY_AUTOMATION_KEYS = [
+    'pet_diary_adopt',
+    'pet_diary_feed',
+    'pet_diary_draw',
+    'pet_diary_story_claim',
+    'pet_diary_seed_claim',
+    'pet_diary_solar_claim',
+    'pet_diary_treasure_open',
+    'pet_diary_compensation_claim',
+    'pet_diary_battle',
+    'pet_diary_charm_equip'
+];
 
 const TIMED_ACTIVITY_AUTOMATION_GROUPS = [
     {
@@ -324,6 +348,11 @@ const TIMED_ACTIVITY_AUTOMATION_GROUPS = [
         startTime: 1787709600,
         endTime: 1788883199,
         keys: RAIN_POEM_AUTOMATION_KEYS
+    },
+    {
+        startTime: 1789005600,
+        endTime: 1791820799,
+        keys: PET_DIARY_AUTOMATION_KEYS
     }
 ];
 
@@ -346,6 +375,23 @@ function disableHiddenActivityAutomation(automation, nowSeconds = Math.floor(Dat
     if (!automation || typeof automation !== 'object') return automation;
     for (const key of getInactiveActivityAutomationKeys(nowSeconds)) automation[key] = false;
     return automation;
+}
+
+let inactiveActivityConfigNeedsSave = false;
+function persistInactiveActivityAutomation(nowSeconds = Math.floor(Date.now() / 1000)) {
+    const inactive = [...getInactiveActivityAutomationKeys(nowSeconds)];
+    const changedAccounts = [];
+    for (const [id, cfg] of Object.entries(globalConfig.accountConfigs || {})) {
+        if (!inactive.some(key => cfg.automation?.[key] === true)) continue;
+        disableHiddenActivityAutomation(cfg.automation, nowSeconds);
+        changedAccounts.push(id);
+        inactiveActivityConfigNeedsSave = true;
+    }
+    if (inactiveActivityConfigNeedsSave) {
+        saveGlobalConfig({ throwOnError: true });
+        inactiveActivityConfigNeedsSave = false;
+    }
+    return changedAccounts;
 }
 
 /** 默认间隔配置（秒） */
@@ -389,6 +435,7 @@ const DEFAULT_ACCOUNT_CONFIG = {
     },
     plantingStrategy: 'max_exp',
     prioritize2x2Crops: false,
+    prioritizeGrowthTasks: false,
     friendBadRetryDate: '',
     intervals: DEFAULT_INTERVALS,
     friendQuietHours: DEFAULT_QUIET_HOURS,
@@ -456,7 +503,7 @@ function syncBagSeedPriority(accountId, bagSeeds, options = {}) {
     const currentIds = currentSeeds.map(seed => seed.seedId);
     const priority = normalizeBagSeedPriority(cfg.bagSeedPriority);
     const knownIds = normalizeBagSeedPriority(cfg.bagSeedKnownIds);
-    const nextPriority = [...currentIds];
+    const nextPriority = [...priority, ...currentIds.filter(id => !priority.includes(id))];
 
     const nextKnownIds = [...new Set([...knownIds, ...priority, ...currentIds])];
     const changed = JSON.stringify(nextPriority) !== JSON.stringify(priority)
@@ -633,6 +680,7 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
         plantingStrategy: ALLOWED_PLANTING_STRATEGIES.includes(String(config.plantingStrategy || ''))
             ? String(config.plantingStrategy) : DEFAULT_ACCOUNT_CONFIG.plantingStrategy,
         prioritize2x2Crops: config.prioritize2x2Crops === true,
+        prioritizeGrowthTasks: config.prioritizeGrowthTasks === true,
         plantBlacklist: plantBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0),
         stealDelaySeconds: Math.max(0, Math.min(60, Number(config.stealDelaySeconds) || 1)),
         fertilizerBuyOrganicCount: Math.max(0, Math.min(999, Number(config.fertilizerBuyOrganicCount) || 1)),
@@ -759,6 +807,9 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
     if (input.prioritize2x2Crops !== undefined && input.prioritize2x2Crops !== null) {
         cfg.prioritize2x2Crops = input.prioritize2x2Crops === true;
     }
+    if (input.prioritizeGrowthTasks !== undefined && input.prioritizeGrowthTasks !== null) {
+        cfg.prioritizeGrowthTasks = input.prioritizeGrowthTasks === true;
+    }
     cfg.friendBadRetryDate = /^\d{4}-\d{2}-\d{2}$/.test(String(input.friendBadRetryDate || ''))
         ? String(input.friendBadRetryDate) : '';
 
@@ -855,6 +906,7 @@ function pickDefaultPlanConfig(raw) {
         autoCodeRefresh: { ...cfg.autoCodeRefresh },
         plantingStrategy: cfg.plantingStrategy,
         prioritize2x2Crops: cfg.prioritize2x2Crops === true,
+        prioritizeGrowthTasks: cfg.prioritizeGrowthTasks === true || cfg.plantingStrategy === 'task_priority',
         intervals: { ...cfg.intervals },
         friendQuietHours: { ...cfg.friendQuietHours },
         stealDelaySeconds: cfg.stealDelaySeconds,
@@ -940,6 +992,9 @@ function loadGlobalConfig() {
         for (const [key, val] of Object.entries(rawConfigs)) {
             const id = String(key || '').trim();
             if (!id) continue;
+            if ([...getInactiveActivityAutomationKeys()].some(k => val?.automation?.[k] === true)) {
+                inactiveActivityConfigNeedsSave = true;
+            }
             globalConfig.accountConfigs[id] = normalizeAccountConfig(val, DEFAULT_ACCOUNT_CONFIG);
         }
         for (const [key, val] of Object.entries(globalConfig.accountConfigs)) {
@@ -1202,6 +1257,7 @@ function getConfigSnapshot(accountId) {
         autoCodeRefresh: { ...cfg.autoCodeRefresh },
         plantingStrategy: cfg.plantingStrategy,
         prioritize2x2Crops: cfg.prioritize2x2Crops === true,
+        prioritizeGrowthTasks: cfg.prioritizeGrowthTasks === true || cfg.plantingStrategy === 'task_priority',
         friendBadRetryDate: String(cfg.friendBadRetryDate || ''),
         intervals: { ...cfg.intervals },
         friendQuietHours: { ...cfg.friendQuietHours },
@@ -1259,6 +1315,9 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
     }
     if (patch.prioritize2x2Crops !== undefined && patch.prioritize2x2Crops !== null) {
         cfg.prioritize2x2Crops = patch.prioritize2x2Crops === true;
+    }
+    if (patch.prioritizeGrowthTasks !== undefined && patch.prioritizeGrowthTasks !== null) {
+        cfg.prioritizeGrowthTasks = patch.prioritizeGrowthTasks === true;
     }
     if (patch.friendBadRetryDate !== undefined && patch.friendBadRetryDate !== null) {
         const retryDate = String(patch.friendBadRetryDate || '');
@@ -1382,6 +1441,11 @@ function isAutomationOn(key, accountId) {
 
 function getPlantingStrategy(accountId) {
     return getAccountConfigSnapshot(accountId).plantingStrategy;
+}
+
+function getPrioritizeGrowthTasks(accountId) {
+    const config = getAccountConfigSnapshot(accountId);
+    return config.prioritizeGrowthTasks === true || config.plantingStrategy === 'task_priority';
 }
 
 function getPrioritize2x2Crops(accountId) {
@@ -2026,6 +2090,8 @@ module.exports = {
     isAutomationOn,
     getPlantingStrategy,
     getPrioritize2x2Crops,
+    getPrioritizeGrowthTasks,
+    persistInactiveActivityAutomation,
     getFriendBadRetryDate,
     getBagSeedPriority,
     syncBagSeedPriority,
@@ -2110,6 +2176,7 @@ module.exports._test = {
     HIDDEN_ACTIVITY_AUTOMATION_KEYS,
     RAIN_POEM_AUTOMATION_KEYS,
     CHARITY_FLOWER_AUTOMATION_KEYS,
+    PET_DIARY_AUTOMATION_KEYS,
     getInactiveActivityAutomationKeys,
     getLocalDateKey,
     normalizeFriendDogInfoCache

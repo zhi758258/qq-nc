@@ -28,6 +28,16 @@ export interface AutomationConfig {
   charity_flower_donate?: boolean
   charity_flower_reward_claim?: boolean
   charity_flower_public_fund_claim?: boolean
+  pet_diary_adopt?: boolean
+  pet_diary_feed?: boolean
+  pet_diary_draw?: boolean
+  pet_diary_story_claim?: boolean
+  pet_diary_seed_claim?: boolean
+  pet_diary_solar_claim?: boolean
+  pet_diary_treasure_open?: boolean
+  pet_diary_compensation_claim?: boolean
+  pet_diary_charm_equip?: boolean
+  pet_diary_battle?: boolean
   sell?: boolean
   fertilizer_gift?: boolean
   fertilizer_buy_organic?: boolean
@@ -58,8 +68,6 @@ export interface IntervalsConfig {
   friendMax?: number
   helpMin?: number
   helpMax?: number
-  stealMin?: number
-  stealMax?: number
 }
 
 export interface FriendQuietHoursConfig {
@@ -102,6 +110,7 @@ export interface AutoCodeRefreshConfig {
 export interface SettingsState {
   plantingStrategy: string
   prioritize2x2Crops: boolean
+  prioritizeGrowthTasks: boolean
   bagSeedPriority: number[]
   bagSeedKnownIds: number[]
   bagSeedFallbackStrategy: string
@@ -112,7 +121,6 @@ export interface SettingsState {
   autoCodeRefresh: AutoCodeRefreshConfig
   ui: UIConfig
   offlineReminder: OfflineConfig
-  stealDelaySeconds: number
   fertilizerBuyOrganicCount: number
   fertilizerBuyOrganicThresholdHours: number
   fertilizerBuyNormalCount: number
@@ -159,6 +167,7 @@ export const useSettingStore = defineStore('setting', () => {
   const settings = ref<SettingsState>({
     plantingStrategy: 'max_exp',
     prioritize2x2Crops: false,
+    prioritizeGrowthTasks: false,
     bagSeedPriority: [],
     bagSeedKnownIds: [],
     bagSeedFallbackStrategy: 'level',
@@ -169,7 +178,6 @@ export const useSettingStore = defineStore('setting', () => {
     autoCodeRefresh: createDefaultAutoCodeRefresh(),
     ui: {},
     offlineReminder: createDefaultOfflineReminder(),
-    stealDelaySeconds: 0,
     fertilizerBuyOrganicCount: 10,
     fertilizerBuyOrganicThresholdHours: 10,
     fertilizerBuyNormalCount: 10,
@@ -191,6 +199,7 @@ export const useSettingStore = defineStore('setting', () => {
     settings.value = {
       plantingStrategy: 'max_exp',
       prioritize2x2Crops: false,
+      prioritizeGrowthTasks: false,
       bagSeedPriority: [],
       bagSeedKnownIds: [],
       bagSeedFallbackStrategy: 'level',
@@ -201,7 +210,6 @@ export const useSettingStore = defineStore('setting', () => {
       autoCodeRefresh: createDefaultAutoCodeRefresh(),
       ui: {},
       offlineReminder: createDefaultOfflineReminder(),
-      stealDelaySeconds: 0,
       fertilizerBuyOrganicCount: 10,
       fertilizerBuyOrganicThresholdHours: 10,
       fertilizerBuyNormalCount: 10,
@@ -229,6 +237,7 @@ export const useSettingStore = defineStore('setting', () => {
         const d = data.data
         settings.value.plantingStrategy = d.plantingStrategy || d.strategy || 'max_exp'
         settings.value.prioritize2x2Crops = d.prioritize2x2Crops === true
+        settings.value.prioritizeGrowthTasks = d.prioritizeGrowthTasks === true
         settings.value.intervals = d.intervals || {}
         settings.value.friendQuietHours = d.friendQuietHours || { enabled: false, start: '23:00', end: '07:00' }
         settings.value.automation = d.automation || {}
@@ -239,7 +248,6 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.ui = d.ui || {}
         settings.value.autoAcceptFriendMinLevel = d.autoAcceptFriendMinLevel ?? 0
         settings.value.offlineReminder = normalizeOfflineReminder(d.offlineReminder)
-        settings.value.stealDelaySeconds = d.stealDelaySeconds ?? 0
         settings.value.fertilizerBuyOrganicCount = d.fertilizerBuyOrganicCount ?? 10
         settings.value.fertilizerBuyOrganicThresholdHours = d.fertilizerBuyOrganicThresholdHours ?? 10
         settings.value.fertilizerBuyNormalCount = d.fertilizerBuyNormalCount ?? 10
@@ -266,6 +274,7 @@ export const useSettingStore = defineStore('setting', () => {
       const settingsPayload = {
         plantingStrategy: newSettings.plantingStrategy,
         prioritize2x2Crops: newSettings.prioritize2x2Crops === true,
+        prioritizeGrowthTasks: newSettings.prioritizeGrowthTasks === true,
         bagSeedPriority: newSettings.bagSeedPriority ?? [],
         bagSeedKnownIds: newSettings.bagSeedKnownIds ?? [],
         bagSeedFallbackStrategy: newSettings.bagSeedFallbackStrategy ?? 'level',
@@ -273,7 +282,6 @@ export const useSettingStore = defineStore('setting', () => {
         autoCodeRefresh: newSettings.autoCodeRefresh,
         intervals: newSettings.intervals,
         friendQuietHours: newSettings.friendQuietHours,
-        stealDelaySeconds: newSettings.stealDelaySeconds ?? 0,
         fertilizerBuyOrganicCount: newSettings.fertilizerBuyOrganicCount ?? 10,
         fertilizerBuyOrganicThresholdHours: newSettings.fertilizerBuyOrganicThresholdHours ?? 10,
         fertilizerBuyNormalCount: newSettings.fertilizerBuyNormalCount ?? 10,

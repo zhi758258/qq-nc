@@ -1,6 +1,6 @@
 // Per-worker state. Reuse the shared friend list; treasure previews must be live.
 function createPetDiaryBattleAutomation({ getPet, getFriends, getFriend, operate,
-    enabled, excluded, now, pause, report, budgetMs = 30000 }) {
+    enabled, excluded, now, pause, report, healthy = () => true, budgetMs = 30000 }) {
     let lastGid = '';
     let running = false;
     let nextRunAt = 0;
@@ -19,6 +19,10 @@ function createPetDiaryBattleAutomation({ getPet, getFriends, getFriend, operate
         let scanned = 0;
         let battles = 0;
         try {
+            if (!healthy()) {
+                report('网关不健康，跳过本轮好友夺宝', { scanned, battles });
+                return;
+            }
             let pet = await getPet();
             if (!ready(pet)) return;
             const friends = [...new Map((await getFriends()).map(f => [String(f.gid), f])).values()];
@@ -29,12 +33,12 @@ function createPetDiaryBattleAutomation({ getPet, getFriends, getFriend, operate
             const start = (friends.findIndex(f => String(f.gid) === lastGid) + 1) % friends.length;
             const deadline = now() + budgetMs;
             for (let offset = 0; offset < friends.length && now() < deadline; offset++) {
-                if (!ready(pet)) break;
+                if (!ready(pet) || !healthy()) break;
                 const gid = String(friends[(start + offset) % friends.length].gid);
                 lastGid = gid;
                 if (!/^[1-9]\d*$/.test(gid) || excluded(gid)) continue;
                 await pause();
-                if (!ready(pet)) break;
+                if (!ready(pet) || !healthy()) break;
                 let friend;
                 try {
                     friend = await getFriend(gid);
@@ -44,6 +48,7 @@ function createPetDiaryBattleAutomation({ getPet, getFriends, getFriend, operate
                     report(`查询好友宝藏失败：${error.message}`, { scanned, battles, error: true });
                     break;
                 }
+                if (!healthy()) break;
                 if (!ready(pet) || excluded(gid) || String(friend.gid) !== gid) continue;
                 let target;
                 let challengeId;

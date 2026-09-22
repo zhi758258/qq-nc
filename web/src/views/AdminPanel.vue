@@ -8,11 +8,13 @@ import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSwitch from '@/components/ui/BaseSwitch.vue'
 import { useToastStore } from '@/stores/toast'
 import { useUserStore } from '@/stores/user'
+import { saveTextFile } from '@/utils/file-download'
 
 const EDGE_RE = /Edg\/([\d.]+)/
 const CHROME_RE = /Chrome\/([\d.]+)/
 const FIREFOX_RE = /Firefox\/([\d.]+)/
 const SAFARI_VERSION_RE = /Version\/([\d.]+)/
+const QQ_RE = /^\d{5,11}$/
 
 const userStore = useUserStore()
 const toast = useToastStore()
@@ -384,7 +386,7 @@ function isClaimTargetCard(card: Card) {
   return cardClaimEnabled.value && !!cardClaimCardCode.value && card.code === cardClaimCardCode.value
 }
 
-function exportCardsToFile(cardsToExport: Card[], filename?: string) {
+async function exportCardsToFile(cardsToExport: Card[], filename?: string) {
   if (!cardsToExport || cardsToExport.length === 0) {
     toast.warning('没有可导出的卡密')
     return
@@ -394,16 +396,14 @@ function exportCardsToFile(cardsToExport: Card[], filename?: string) {
     `卡密: ${card.code}\n描述: ${card.description}\n时长: ${getCardTypeLabel(card)}\n状态: ${card.enabled ? '启用' : '禁用'}\n${card.usedBy ? `使用者: ${card.usedBy}\n使用时间: ${formatDate(card.usedAt)}` : '未使用'}\n创建时间: ${formatDate(card.createdAt)}\n${'='.repeat(40)}`,
   ).join('\n\n')
 
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename || `卡密导出_${formatDateForFile(Date.now())}.txt`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-
+  const outcome = await saveTextFile({
+    content,
+    filename: filename || `卡密导出_${formatDateForFile(Date.now())}.txt`,
+    mime: 'text/plain;charset=utf-8',
+    title: '卡密导出',
+  })
+  if (outcome === 'cancelled')
+    return
   toast.success(`已导出 ${cardsToExport.length} 个卡密到文件`)
 }
 
@@ -433,6 +433,8 @@ function toggleSelectCard(code: string) {
 interface UserInfo {
   username: string
   role: string
+  qq?: string
+  note?: string
   card: UserCard | null
   accountLimit: number
 }
@@ -440,6 +442,7 @@ interface UserInfo {
 interface EditForm {
   newUsername: string
   password: string
+  qq: string
   accountLimit: number
   expiresAt: string
   isPermanent: boolean
@@ -452,6 +455,7 @@ const selectedUser = ref<UserInfo | null>(null)
 const editForm = ref<EditForm>({
   newUsername: '',
   password: '',
+  qq: '',
   accountLimit: 2,
   expiresAt: '',
   isPermanent: false,
@@ -516,6 +520,124 @@ async function confirmCleanupExpired() {
 
 const currentUsername = computed(() => userStore.username)
 
+// ========== 用户数据备份 ==========
+interface UserBackupPayload {
+  format?: string
+  version?: number
+  exportedAt?: string
+  counts?: { users?: number, cards?: number }
+  users?: unknown[]
+  cards?: unknown[]
+}
+
+const backupExporting = ref(false)
+const backupImporting = ref(false)
+const showImportBackupModal = ref(false)
+const importBackupMode = ref<'skip' | 'overwrite'>('skip')
+const importBackupFileName = ref('')
+const importBackupPayload = ref<UserBackupPayload | null>(null)
+const importBackupError = ref('')
+
+const importBackupCounts = computed(() => ({
+  users: Array.isArray(importBackupPayload.value?.users) ? importBackupPayload.value!.users!.length : 0,
+  cards: Array.isArray(importBackupPayload.value?.cards) ? importBackupPayload.value!.cards!.length : 0,
+}))
+
+async function exportUsersBackup() {
+  if (backupExporting.value)
+    return
+  backupExporting.value = true
+  try {
+    const result = await userStore.exportUserBackup()
+    if (!result.ok) {
+      toast.error(result.error || '导出备份失败')
+      return
+    }
+    const outcome = await saveTextFile({
+      content: JSON.stringify(result.data, null, 2),
+      filename: `用户数据备份_${formatDateForFile(Date.now())}.json`,
+      title: '用户数据备份',
+    })
+    if (outcome === 'cancelled')
+      return
+    if (outcome === 'failed') {
+      toast.error('浏览器未允许保存文件，请改用桌面浏览器或从分享面板保存')
+      return
+    }
+    toast.success(`已导出 ${result.data?.counts?.users ?? 0} 个用户、${result.data?.counts?.cards ?? 0} 个卡密`)
+  }
+  catch (e: any) {
+    toast.error(e?.response?.data?.error || e?.message || '导出备份失败')
+  }
+  finally {
+    backupExporting.value = false
+  }
+}
+
+function openImportBackupModal() {
+  importBackupMode.value = 'skip'
+  importBackupFileName.value = ''
+  importBackupPayload.value = null
+  importBackupError.value = ''
+  showImportBackupModal.value = true
+}
+
+async function handleImportBackupFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  importBackupPayload.value = null
+  importBackupError.value = ''
+  importBackupFileName.value = file?.name || ''
+  if (!file)
+    return
+  if (file.size > 5 * 1024 * 1024) {
+    importBackupError.value = '备份文件不能超过 5MB'
+    return
+  }
+  try {
+    const parsed = JSON.parse(await file.text())
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.users)) {
+      importBackupError.value = '备份文件格式不正确，请选择本站导出的用户数据备份'
+      return
+    }
+    importBackupPayload.value = parsed
+  }
+  catch {
+    importBackupError.value = '备份文件不是合法的 JSON'
+  }
+}
+
+async function confirmImportBackup() {
+  if (!importBackupPayload.value || backupImporting.value)
+    return
+  backupImporting.value = true
+  try {
+    const result = await userStore.importUserBackup(importBackupPayload.value, importBackupMode.value)
+    if (!result.ok) {
+      toast.error(result.error || '导入备份失败')
+      return
+    }
+    const data = result.data || {}
+    const summary = [
+      `新增用户 ${data.added ?? 0}`,
+      data.overwritten ? `覆盖用户 ${data.overwritten}` : '',
+      data.skipped ? `跳过用户 ${data.skipped}` : '',
+      `新增卡密 ${data.cardsAdded ?? 0}`,
+      data.cardsOverwritten ? `覆盖卡密 ${data.cardsOverwritten}` : '',
+    ].filter(Boolean).join('，')
+    toast.success(`导入完成：${summary}`)
+    showImportBackupModal.value = false
+    await Promise.all([fetchUsers(), fetchUserStats()])
+  }
+  catch (e: any) {
+    toast.error(e?.response?.data?.error || e?.message || '导入备份失败')
+  }
+  finally {
+    backupImporting.value = false
+  }
+}
+
 async function fetchUsers() {
   usersLoading.value = true
   try {
@@ -577,6 +699,7 @@ function openEditModal(user: UserInfo) {
   editForm.value = {
     newUsername: user.username,
     password: '',
+    qq: user.qq || '',
     accountLimit: user.accountLimit || 2,
     expiresAt: user.card?.expiresAt ? formatDateTimeLocal(user.card.expiresAt) : '',
     isPermanent: user.card?.days === -1,
@@ -616,6 +739,19 @@ async function handleEdit() {
 
     if (editForm.value.password) {
       updateData.password = editForm.value.password
+    }
+
+    const qqValue = editForm.value.qq.trim()
+    if (qqValue && !QQ_RE.test(qqValue)) {
+      toast.error('QQ号格式不正确，应为5-11位数字')
+      return
+    }
+    if (qqValue !== (selectedUser.value.qq || '')) {
+      if (!qqValue) {
+        toast.error('QQ号不能为空')
+        return
+      }
+      updateData.qq = qqValue
     }
 
     const res = await api.post(`/api/admin/users/${selectedUser.value.username}/edit`, updateData)
@@ -1190,6 +1326,23 @@ onMounted(() => {
               >
                 清理过期用户
               </BaseButton>
+              <BaseButton
+                v-if="userStore.isSuperAdmin"
+                variant="secondary"
+                size="sm"
+                :loading="backupExporting"
+                @click="exportUsersBackup"
+              >
+                导出备份
+              </BaseButton>
+              <BaseButton
+                v-if="userStore.isSuperAdmin"
+                variant="secondary"
+                size="sm"
+                @click="openImportBackupModal"
+              >
+                导入备份
+              </BaseButton>
               <BaseButton variant="primary" size="sm" :loading="statsLoading" @click="fetchUserStats">
                 刷新统计
               </BaseButton>
@@ -1260,6 +1413,9 @@ onMounted(() => {
                       用户名
                     </th>
                     <th class="px-3 py-2 text-left text-xs text-gray-500 font-medium uppercase dark:text-gray-300">
+                      QQ
+                    </th>
+                    <th class="px-3 py-2 text-left text-xs text-gray-500 font-medium uppercase dark:text-gray-300">
                       角色
                     </th>
                     <th class="px-3 py-2 text-left text-xs text-gray-500 font-medium uppercase dark:text-gray-300">
@@ -1283,6 +1439,9 @@ onMounted(() => {
                   <tr v-for="user in users" :key="user.username">
                     <td class="whitespace-nowrap px-3 py-2 text-sm text-gray-900 font-medium dark:text-white">
                       {{ user.username }}
+                    </td>
+                    <td class="whitespace-nowrap px-3 py-2 text-sm text-gray-900 font-mono dark:text-white">
+                      {{ user.qq || '-' }}
                     </td>
                     <td class="whitespace-nowrap px-3 py-2 text-sm text-gray-900 dark:text-white">
                       <span
@@ -1340,7 +1499,7 @@ onMounted(() => {
                     </td>
                   </tr>
                   <tr v-if="users.length === 0">
-                    <td colspan="8" class="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
+                    <td colspan="9" class="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
                       暂无用户
                     </td>
                   </tr>
@@ -1369,6 +1528,18 @@ onMounted(() => {
                   />
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                     用户名只能包含字母、数字和下划线，长度3-32位
+                  </p>
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm text-gray-700 font-medium dark:text-gray-300">
+                    绑定QQ
+                  </label>
+                  <BaseInput
+                    v-model="editForm.qq"
+                    placeholder="用户注册时绑定的QQ号"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    用于QQ群验证，5-11位数字
                   </p>
                 </div>
                 <div>
@@ -1444,6 +1615,99 @@ onMounted(() => {
             @cancel="showCleanupExpiredConfirm = false"
             @close="showCleanupExpiredConfirm = false"
           />
+
+          <div
+            v-if="showImportBackupModal"
+            class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50"
+            @click.self="showImportBackupModal = false"
+          >
+            <div class="max-w-md w-full rounded-2xl bg-white p-5 shadow-xl dark:bg-gray-800" @click.stop>
+              <h2 class="mb-4 text-lg text-gray-900 font-bold dark:text-white">
+                导入用户数据备份
+              </h2>
+
+              <div class="space-y-3">
+                <div>
+                  <label class="mb-1 block text-sm text-gray-700 font-medium dark:text-gray-300">
+                    备份文件
+                  </label>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    class="block w-full text-sm text-gray-700 dark:text-gray-300"
+                    @change="handleImportBackupFile"
+                  >
+                  <p v-if="importBackupFileName" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    已选择：{{ importBackupFileName }}
+                  </p>
+                </div>
+
+                <div
+                  v-if="importBackupPayload"
+                  class="rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-300"
+                  style="background-color: rgba(148, 163, 184, 0.14);"
+                >
+                  待导入 {{ importBackupCounts.users }} 个用户、{{ importBackupCounts.cards }} 个卡密
+                  <span v-if="importBackupPayload.exportedAt">（导出于 {{ formatDate(importBackupPayload.exportedAt) }}）</span>
+                </div>
+
+                <div v-if="importBackupError" class="rounded-lg px-3 py-2 text-xs text-red-700 dark:text-red-300" style="background-color: rgba(239, 68, 68, 0.12);">
+                  {{ importBackupError }}
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-sm text-gray-700 font-medium dark:text-gray-300">
+                    同名记录处理方式
+                  </label>
+                  <div class="flex gap-2">
+                    <button
+                      class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm transition-all dark:border-gray-600"
+                      :class="importBackupMode === 'skip' ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'"
+                      :style="importBackupMode === 'skip' ? { backgroundColor: 'var(--theme-primary)', borderColor: 'var(--theme-primary)' } : {}"
+                      @click="importBackupMode = 'skip'"
+                    >
+                      跳过已存在
+                    </button>
+                    <button
+                      class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm transition-all dark:border-gray-600"
+                      :class="importBackupMode === 'overwrite' ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'"
+                      :style="importBackupMode === 'overwrite' ? { backgroundColor: 'var(--theme-primary)', borderColor: 'var(--theme-primary)' } : {}"
+                      @click="importBackupMode = 'overwrite'"
+                    >
+                      覆盖已存在
+                    </button>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    跳过：只新增缺失的用户与卡密；覆盖：以备份内容替换同名记录（密码、角色、额度、卡密状态均以备份为准）
+                  </p>
+                </div>
+
+                <div class="rounded-lg px-3 py-2 text-xs text-amber-800 dark:text-amber-200" style="background-color: rgba(250, 204, 21, 0.14);">
+                  导入包含密码凭据，请确认备份文件来源可信。当前登录账号不会被覆盖。
+                </div>
+              </div>
+
+              <div class="mt-4 flex justify-end space-x-3">
+                <BaseButton
+                  variant="secondary"
+                  size="sm"
+                  :disabled="backupImporting"
+                  @click="showImportBackupModal = false"
+                >
+                  取消
+                </BaseButton>
+                <BaseButton
+                  variant="primary"
+                  size="sm"
+                  :loading="backupImporting"
+                  :disabled="!importBackupPayload"
+                  @click="confirmImportBackup"
+                >
+                  确认导入
+                </BaseButton>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 登录日志 -->

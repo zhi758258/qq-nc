@@ -10,6 +10,7 @@ import AccountFeatureSettings from '@/components/settings/AccountFeatureSettings
 import AccountSettingsTab from '@/components/settings/AccountSettingsTab.vue'
 import AutoCodeRefreshCard from '@/components/settings/AutoCodeRefreshCard.vue'
 import DeviceProtocolCard from '@/components/settings/DeviceProtocolCard.vue'
+import NapcatSourceCard from '@/components/settings/NapcatSourceCard.vue'
 import OfflineReminderCard from '@/components/settings/OfflineReminderCard.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
@@ -18,11 +19,13 @@ import { useAutomationSettings } from '@/composables/settings/useAutomationSetti
 import { useStrategySettings } from '@/composables/settings/useStrategySettings'
 import { useUserSettings } from '@/composables/settings/useUserSettings'
 import { useAdminSystemConfig } from '@/composables/useAdminSystemConfig'
+import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
 import { useSettingStore } from '@/stores/setting'
 import { useUserStore } from '@/stores/user'
 
 const appStore = useAppStore()
+const accountStore = useAccountStore()
 const settingStore = useSettingStore()
 const userStore = useUserStore()
 const route = useRoute()
@@ -320,7 +323,7 @@ async function saveAutoCodeRefreshSettings() {
     const result = await settingStore.saveAutoCodeRefresh(String(currentAccountId.value), localAutoCodeRefresh.value)
     if (!result.ok)
       throw new Error(result.error || '保存失败')
-    showAlert('微信定时刷新重登设置已保存')
+    showAlert('自动刷新重登设置已保存')
   }
   catch (error: any) {
     showAlert(error.response?.data?.error || error.message || '刷新设置保存失败', 'danger')
@@ -657,10 +660,18 @@ onMounted(async () => {
             @random-imei="fillRandomImei"
           />
 
+          <NapcatSourceCard
+            v-if="accountStore.currentAccount?.platform === 'qq'"
+            :current-account="accountStore.currentAccount"
+            :current-account-id="currentAccountId"
+            :loading="settingsLoading"
+          />
+
           <AutoCodeRefreshCard
             v-model:config="localAutoCodeRefresh"
             :current-account-name="currentAccountName"
             :current-account-id="currentAccountId"
+            :account-platform="accountStore.currentAccount?.platform || ''"
             :loading="settingsLoading"
             :saving="autoCodeRefreshSaving"
             :refreshing="autoCodeRefreshing"

@@ -16,7 +16,10 @@ export interface Account {
   avatarUrl?: string
   username?: string
   platform?: string
+  loginType?: string
   running?: boolean
+  napcatApi?: string
+  napcatKey?: string
   // Add other fields as discovered
 }
 

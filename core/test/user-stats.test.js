@@ -207,3 +207,21 @@ test('registerUser 强制要求合法QQ号并正确存储', () => {
   assert.equal(userStore.normalizeQq('abc123').ok, false);
   assert.deepEqual(userStore.normalizeQq('1234567'), { ok: true, data: '1234567' });
 });
+
+test('编辑用户可修改绑定QQ并拒绝非法QQ', () => {
+  register('qqedit', createTimeCard(), '77777777');
+  assert.equal(userStore.getUser('qqedit').qq, '77777777');
+
+  const updated = userStore.editUser({ username: 'qqedit', update: { qq: '66666666' } });
+  assert.equal(updated.ok, true);
+  assert.equal(userStore.getUser('qqedit').qq, '66666666');
+  assert.equal(
+    userStore.getAllUsers().find((u) => u.username === 'qqedit').qq,
+    '66666666',
+  );
+
+  const invalid = userStore.editUser({ username: 'qqedit', update: { qq: 'abc' } });
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.error, /QQ号/);
+  assert.equal(userStore.getUser('qqedit').qq, '66666666');
+});

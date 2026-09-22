@@ -211,7 +211,9 @@ function createRuntimeEngine(options = {}) {
                         accountId: String(acc.id), accountName: acc.name
                     });
                 }
-                if (acc.platform === 'wx' && acc.loginBuffer) {
+                const canAutoRefresh = (acc.platform === 'wx' && acc.loginBuffer)
+                    || !!String(acc.napcatApi || '').trim();
+                if (canAutoRefresh) {
                     const refreshed = await autoCodeRefresh.refreshAccountCode(acc.id, 'startup');
                     if (!refreshed) startWorker(acc);
                 } else {

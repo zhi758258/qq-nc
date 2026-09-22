@@ -310,6 +310,7 @@ const runPetDiaryBattles = require('../services/pet-diary-battle-automation').cr
         shouldContinue: () => petDiaryBattleEnabled() && !petDiaryBattleExcluded(params.gid),
     }),
     enabled: petDiaryBattleEnabled,
+    healthy: () => getGatewayHealth().healthy,
     excluded: petDiaryBattleExcluded,
     now: () => require('../utils/utils').getServerTimeSec() * 1000,
     pause: () => new Promise(resolve => setTimeout(resolve, 400)),
@@ -481,6 +482,7 @@ async function runPetDiaryAutomation(flags) {
 
 async function runStarActivityAutoClaims() {
     if (!loginReady || friendSyncPaused || starActivityClaimRunning) return;
+    if (getBusinessDeferMs('activity') > 0) return;
 
     const automation = getAutomation() || {};
     const claimPassport = automation.star_passport_claim === true;
@@ -840,8 +842,8 @@ async function runStarActivityAutoClaims() {
             } // end if (rainPoem?.active !== false)
         }
 
-        if (petDiaryAnyEnabled) {
-            await runPetDiaryAutomation({
+        if (petDiaryAnyEnabled && getBusinessDeferMs('activity') === 0) {
+            await runWithRequestPriority('background', () => runPetDiaryAutomation({
                 adopt: petDiaryAdoptEnabled,
                 feed: petDiaryFeedEnabled,
                 draw: petDiaryDrawEnabled,
@@ -852,7 +854,7 @@ async function runStarActivityAutoClaims() {
                 compensation: petDiaryCompensationEnabled,
                 battle: petDiaryBattleFlag,
                 charm: petDiaryCharmEnabled
-            });
+            }));
         }
     } catch (err) {
         if (!isTransientNetworkError(err)) {
@@ -971,14 +973,18 @@ function resetUnifiedSchedule() {
 const businessBackoff = {
     farm: { delayMs: 0, reason: '' },
     friend: { delayMs: 0, reason: '' },
+    activity: { delayMs: 0, reason: '' },
 };
+
+const BUSINESS_KIND_LABEL = { farm: '农场', friend: '好友', activity: '活动' };
 
 function getBusinessDeferMs(kind) {
     const state = businessBackoff[kind];
     const health = getGatewayHealth();
+    const label = BUSINESS_KIND_LABEL[kind] || kind;
     if (health.healthy) {
         if (state.delayMs > 0) {
-            log('系统', `${kind === 'farm' ? '农场' : '好友'}任务网关已恢复`, {
+            log('系统', `${label}任务网关已恢复`, {
                 module: 'network', event: '业务网关恢复', kind,
             });
         }
@@ -988,7 +994,7 @@ function getBusinessDeferMs(kind) {
     }
     state.delayMs = nextBusinessBackoffMs(state.delayMs);
     if (state.reason !== health.reason) {
-        log('系统', `${kind === 'farm' ? '农场' : '好友'}任务因网关不健康退避 ${Math.round(state.delayMs / 1000)} 秒`, {
+        log('系统', `${label}任务因网关不健康退避 ${Math.round(state.delayMs / 1000)} 秒`, {
             module: 'network', event: '业务网关退避', kind, reason: health.reason,
             pending: health.pending,
         });

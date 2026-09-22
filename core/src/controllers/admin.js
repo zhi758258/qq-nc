@@ -353,6 +353,11 @@ function startAdminServer(dataProvider) {
   provider = dataProvider;
   app = express();
   app.set("trust proxy", true);
+  // 用户备份导入需携带完整用户与卡密数据，单独放宽该路径的请求体上限
+  app.use(
+    "/api/admin/users/backup/import",
+    express.json({ limit: "6mb" }),
+  );
   app.use(express.json({ limit: "256kb" }));
 
   const adminSessionManager = createAdminSessionManager({
@@ -440,6 +445,8 @@ function startAdminServer(dataProvider) {
     userStore,
     requireAdminToken,
     requireAdminRole,
+    requireSuperAdminRole,
+    requireDangerConfirmation,
     getAdminUserMutationError,
   });
   registerHealthRoute(app);

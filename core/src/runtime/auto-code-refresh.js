@@ -1,5 +1,6 @@
 const { createScheduler } = require('../services/scheduler');
 const wxLoginAdapter = require('../services/wx-login-adapter');
+const napcatSource = require('../services/napcat-source');
 
 function createAutoCodeRefreshService(deps) {
   const {
@@ -54,7 +55,21 @@ function createAutoCodeRefreshService(deps) {
     };
   }
 
+  function hasNapcatSource(account) {
+    return !!String(account && account.napcatApi || '').trim();
+  }
+
   async function requestFarmCode(account) {
+    // QQ 农场号经 NapCat + qq-code 插件自动取码。
+    if (hasNapcatSource(account)) {
+      const { code } = await napcatSource.requestCode({
+        napcatApi: account.napcatApi,
+        napcatKey: account.napcatKey,
+      });
+      if (!code) throw new Error('NapCat 返回空 Code');
+      return code;
+    }
+
     const wxid = String(account && account.wxid || '').trim();
     if (!wxid) throw new Error('账号缺少 wxid，无法自动刷新 Code');
 
@@ -116,29 +131,35 @@ function createAutoCodeRefreshService(deps) {
     scheduler.clear(getKeepaliveTaskName(accountId));
 
     const account = findAccount(accountId);
-    // Code refresh and credential keepalive only apply to WeChat scan-login accounts.
-    // All accounts are passed through rescheduleAll(), so QQ accounts must exit quietly.
-    if (!account || account.platform !== 'wx') return;
+    // Code refresh only applies to WeChat scan-login accounts or QQ accounts that
+    // declare a NapCat code source. All accounts pass through rescheduleAll(),
+    // so others must exit quietly.
+    if (!account) return;
+    const isWx = account.platform === 'wx';
+    const isNapcat = hasNapcatSource(account);
+    if (!isWx && !isNapcat) return;
 
-    if (!String(account.wxid || '').trim()) {
-      log('系统', '自动刷新 Code 未启动: 账号缺少 wxid', {
-        accountId: String(accountId),
-        accountName: account.name || '',
-      });
-      return;
-    }
+    if (isWx) {
+      if (!String(account.wxid || '').trim()) {
+        log('系统', '自动刷新 Code 未启动: 账号缺少 wxid', {
+          accountId: String(accountId),
+          accountName: account.name || '',
+        });
+        return;
+      }
 
-    if (account.loginBuffer && account.refreshtoken) {
-      scheduler.setIntervalTask(getKeepaliveTaskName(accountId), 30 * 60000, async () => {
-        const latest = findAccount(accountId);
-        if (!latest) return;
-        const result = await wxLoginAdapter.keepWxCredentialAlive(latest);
-        if (!result.Success) {
-          log('错误', `微信凭证保活失败: ${latest.name} - ${result.Message || '未知错误'}`, {
-            accountId: String(accountId), accountName: latest.name,
-          });
-        }
-      }, { preventOverlap: true });
+      if (account.loginBuffer && account.refreshtoken) {
+        scheduler.setIntervalTask(getKeepaliveTaskName(accountId), 30 * 60000, async () => {
+          const latest = findAccount(accountId);
+          if (!latest) return;
+          const result = await wxLoginAdapter.keepWxCredentialAlive(latest);
+          if (!result.Success) {
+            log('错误', `微信凭证保活失败: ${latest.name} - ${result.Message || '未知错误'}`, {
+              accountId: String(accountId), accountName: latest.name,
+            });
+          }
+        }, { preventOverlap: true });
+      }
     }
 
     if (!cfg.enabled) return;
@@ -172,7 +193,9 @@ function createAutoCodeRefreshService(deps) {
     const cfg = normalizeConfig(accountId);
     if (!cfg.enabled) return false;
     const account = findAccount(accountId);
-    if (!account || !account.loginBuffer) return false;
+    if (!account) return false;
+    const canAutoRefresh = (account.platform === 'wx' && account.loginBuffer) || hasNapcatSource(account);
+    if (!canAutoRefresh) return false;
     const recovery = getRecoveryState(accountId);
     if (recovery.attempts >= MAX_DAILY_RECOVERIES
       || recovery.failures >= MAX_CONSECUTIVE_FAILURES) {

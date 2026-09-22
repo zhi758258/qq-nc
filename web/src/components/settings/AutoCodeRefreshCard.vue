@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSwitch from '@/components/ui/BaseSwitch.vue'
@@ -8,13 +9,16 @@ interface AutoCodeRefreshConfig {
   intervalMinutes: number
 }
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   currentAccountName: string | null
   currentAccountId: string | number | null | undefined
+  accountPlatform?: string
   loading: boolean
   saving: boolean
   refreshing: boolean
-}>(), {})
+}>(), {
+  accountPlatform: '',
+})
 
 const emit = defineEmits<{
   save: []
@@ -22,6 +26,24 @@ const emit = defineEmits<{
 }>()
 
 const config = defineModel<AutoCodeRefreshConfig>('config', { required: true })
+
+const platformKind = computed(() => props.accountPlatform || '')
+const cardTitle = computed(() => {
+  if (platformKind.value === 'qq')
+    return 'QQ 断线自动刷新重登'
+  if (platformKind.value === 'wx')
+    return '微信定时刷新重登'
+  return '定时刷新重登'
+})
+const hintText = computed(() => {
+  if (platformKind.value === 'qq') {
+    return 'QQ 账号需先配置 NapCat 取码源。启用后按间隔从 NapCat 获取新 Code 并重启账号；账号被踢或重连失败时也会尝试自动重登。关闭不会停用启动时刷新与 Code 失效时的即时恢复。'
+  }
+  if (platformKind.value === 'wx') {
+    return '启用后会按间隔获取新 Code 并重启账号；账号被踢或重连失败时，也会按此间隔尝试自动重登。关闭不会停用启动时刷新、Code 失效时的即时恢复和微信凭证保活。'
+  }
+  return '启用后会按间隔获取新 Code 并重启账号；账号被踢或重连失败时也会尝试自动重登。'
+})
 </script>
 
 <template>
@@ -29,7 +51,7 @@ const config = defineModel<AutoCodeRefreshConfig>('config', { required: true })
     <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div>
         <h3 class="text-lg text-gray-900 font-bold dark:text-gray-100">
-          微信定时刷新重登
+          {{ cardTitle }}
           <span v-if="currentAccountName" class="ml-2 text-sm text-gray-500 font-normal dark:text-gray-400">
             ({{ currentAccountName }})
           </span>
@@ -62,9 +84,14 @@ const config = defineModel<AutoCodeRefreshConfig>('config', { required: true })
         <div class="min-w-0 space-y-2">
           <BaseSwitch v-model="config.enabled" label="启用定时刷新与自动重登" />
           <p class="max-w-3xl text-xs text-gray-500 dark:text-gray-400">
-            <span class="text-amber-700 font-semibold dark:text-amber-300">仅带内置登录凭据的微信扫码账号可用。</span>
-            启用后会按间隔获取新 Code 并重启账号；账号被踢或重连失败时，也会按此间隔尝试自动重登。
-            关闭不会停用启动时刷新、Code 失效时的即时恢复和微信凭证保活。
+            <span
+              v-if="accountPlatform === 'wx'"
+              class="text-amber-700 font-semibold dark:text-amber-300"
+            >仅带内置登录凭据的微信扫码账号可用。</span>
+            <span v-if="accountPlatform === 'qq'" class="text-amber-700 font-semibold dark:text-amber-300">
+              QQ 账号需要在 NapCat 取码源卡片中配置农场号取码地址。
+            </span>
+            {{ hintText }}
           </p>
         </div>
 

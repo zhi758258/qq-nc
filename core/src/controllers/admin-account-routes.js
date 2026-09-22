@@ -33,6 +33,13 @@ function stripProtectedWxCredentials(source) {
   return result;
 }
 
+function maskCode(code) {
+  const value = String(code || "");
+  if (!value) return "";
+  if (value.length <= 8) return `${"*".repeat(value.length)}(${value.length})`;
+  return `${value.slice(0, 4)}...${value.slice(-4)}(${value.length})`;
+}
+
 const CLIENT_VERSION_RE = /^\d+(?:\.\d+){2,4}_\d{8}$/;
 
 function parseOfficialGatewayUrl(value) {
@@ -213,8 +220,6 @@ function registerAdminAccountRoutes({
       }
       if (gateway) body.code = gateway.code;
       delete body.gatewayUrl;
-      const startAfterSave = body.startAfterSave === true;
-      delete body.startAfterSave;
       const currentUser = req.currentUser;
       const isUpdate = !!body.id;
       const isAdmin =
@@ -348,21 +353,8 @@ function registerAdminAccountRoutes({
             }
           });
         }
-      } else if (!onlyRenaming && (wasRunning || startAfterSave)) {
-        startQueued = true;
-        const startOperation = wasRunning
-          ? provider.restartAccount(nextAccount.id)
-          : provider.startAccount(nextAccount.id);
-        Promise.resolve(startOperation).catch((error) => {
-          if (provider.addAccountLog) {
-            provider.addAccountLog(
-              "start_failed",
-              `账号 ${nextAccount.name || nextAccount.id} 后台启动失败: ${error.message || error}`,
-              nextAccount.id,
-              nextAccount.name || "",
-            );
-          }
-        });
+      } else if (wasRunning && !onlyRenaming) {
+        provider.restartAccount(nextAccount.id);
       }
 
       // 使用 provider 的脱敏结果，避免把微信滚动凭证返回浏览器。
@@ -401,6 +393,181 @@ function registerAdminAccountRoutes({
       res.json({ ok: true, data });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message });
+    }
+  });
+
+  // ===== NapCat 农场取码源 =====
+  // QQ 农场号经 NapCat + qq-code 插件(napcat-plugin-qq-farm-code)签发农场登录 code。
+  // QQ 扫码(devtoolAuth)已被腾讯封禁，NapCat 源是 QQ 端无人值守刷新/断线恢复 code 的
+  // 替代路径。账号持久化字段: napcatApi(插件 HTTP 前缀) / napcatKey(插件 key，可空)。
+  // 仅在服务端访问 NapCat 端点，避免把农场 code 与插件 key 暴露到浏览器。
+
+  app.post("/api/accounts/napcat/test", async (req, res) => {
+    try {
+      if (!req.currentUser) {
+        return res.status(401).json({ ok: false, error: "未登录" });
+      }
+      const body = (req.body && typeof req.body === "object" ? req.body : {}) || {};
+      const napcatApi = String(body.napcatApi || "").trim();
+      if (!napcatApi) {
+        return res.status(400).json({ ok: false, error: "缺少 NapCat 取码地址" });
+      }
+      const napcatSource = require("../services/napcat-source");
+      const { code, uin } = await napcatSource.requestCode({
+        napcatApi,
+        napcatKey: body.napcatKey,
+        timeoutMs: body.timeoutMs,
+      });
+      res.json({
+        ok: true,
+        data: {
+          uin: uin || "",
+          codeMasked: maskCode(code),
+          length: String(code).length,
+          napcatApi,
+        },
+      });
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error.message || String(error) });
+    }
+  });
+
+  app.post("/api/accounts/napcat/login", async (req, res) => {
+    try {
+      const currentUser = req.currentUser;
+      if (!currentUser) {
+        return res.status(401).json({ ok: false, error: "未登录" });
+      }
+      const body = (req.body && typeof req.body === "object" ? req.body : {}) || {};
+      const napcatApi = String(body.napcatApi || "").trim();
+      if (!napcatApi) {
+        return res.status(400).json({ ok: false, error: "缺少 NapCat 取码地址" });
+      }
+      const napcatSource = require("../services/napcat-source");
+      const result = await napcatSource.requestLogin({
+        napcatApi,
+        napcatKey: body.napcatKey,
+        ver: body.ver,
+        timeoutMs: body.timeoutMs,
+      });
+      const isAdmin =
+        currentUser.role === "admin" || currentUser.role === "super_admin";
+      const accounts = provider.getAccounts();
+      const list = Array.isArray(accounts.accounts) ? accounts.accounts : [];
+
+      let existing = null;
+      if (body.matchAccountId) {
+        existing = findAccountByRef(list, body.matchAccountId) || null;
+      }
+      if (!existing) {
+        const uin = result.uin;
+        const gid = (result.farm && result.farm.gid) || "";
+        existing =
+          list.find((acc) => {
+            if (String(acc.platform || "") !== "qq") return false;
+            if (uin && String(acc.uin || "") === uin) return true;
+            return !!gid && String(acc.gid || "") === gid;
+          }) || null;
+      }
+
+      const accountPatch = {
+        code: result.code,
+        napcatApi,
+        // 表单不回显旧 key：留空表示保留账号已有 key（新建时为空）。
+        // 显式填写新 key 时才会覆盖。
+        napcatKey: String(body.napcatKey || "").trim() ? String(body.napcatKey).trim() : (existing ? String(existing.napcatKey || "") : ""),
+        uin: result.uin,
+        qq: result.uin,
+        gid: (result.farm && result.farm.gid) || "",
+        openId: (result.farm && result.farm.open_id) || "",
+        platform: "qq",
+      };
+      if (body.name && String(body.name).trim()) {
+        accountPatch.name = String(body.name).trim();
+      }
+
+      if (!existing && !isAdmin) {
+        const myCount = getAccountsForUser(currentUser.username).length;
+        const accountLimit =
+          currentUser.accountLimit || userStore.DEFAULT_ACCOUNT_LIMIT || 2;
+        if (myCount >= accountLimit) {
+          return res.status(403).json({
+            ok: false,
+            error: `账号数量已达上限（${accountLimit}个），请购买额度卡密增加额度`,
+          });
+        }
+      }
+
+      let createdAccount = null;
+      if (existing) {
+        addOrUpdateAccount({ ...accountPatch, id: existing.id });
+        createdAccount = findAccountByRef(
+          provider.getAccounts().accounts || [],
+          existing.id,
+        );
+      } else {
+        const farmName = (result.farm && result.farm.name) || "";
+        const patch = {
+          ...accountPatch,
+          loginType: "napcat",
+          name:
+            accountPatch.name
+            || farmName
+            || (result.uin ? `QQ ${result.uin}` : "QQ NapCat 账号"),
+          username: currentUser.username,
+        };
+        const data = addOrUpdateAccount(patch);
+        createdAccount = (data.accounts || []).at(-1);
+      }
+
+      if (!createdAccount) {
+        return res.status(500).json({ ok: false, error: "账号写入失败" });
+      }
+
+      // 有 NapCat 源的 QQ 账号具备无人值守刷新能力，默认开启自动刷新；
+      // 周期刷新主要用于被踢/重连失败后的补偿重登。
+      if (typeof provider.saveAutoCodeRefresh === "function") {
+        const prevCfg =
+          store.getAutoCodeRefresh
+            ? store.getAutoCodeRefresh(createdAccount.id)
+            : { enabled: false, intervalMinutes: 60 };
+        await provider.saveAutoCodeRefresh(createdAccount.id, {
+          enabled: body.autoRefresh !== false,
+          intervalMinutes: Number(body.intervalMinutes) || prevCfg.intervalMinutes || 60,
+        });
+      }
+
+      const wasRunning = existing && provider.isAccountRunning
+        ? provider.isAccountRunning(createdAccount.id)
+        : false;
+      if (wasRunning) {
+        provider.restartAccount(createdAccount.id);
+      } else if (typeof provider.startAccount === "function") {
+        Promise.resolve(provider.startAccount(createdAccount.id)).catch(() => {
+          if (provider.addAccountLog) {
+            provider.addAccountLog(
+              "start_failed",
+              `账号 ${createdAccount.name || createdAccount.id} 后台启动失败`,
+              createdAccount.id,
+              createdAccount.name || "",
+            );
+          }
+        });
+      }
+
+      res.json({
+        ok: true,
+        data: {
+          ...createdAccount,
+          napcatKey: "",
+          codeMasked: maskCode(String(createdAccount.code || "")),
+          farm: result.farm,
+          mode: existing ? "updated" : "created",
+        },
+        startup: { queued: true },
+      });
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error.message || String(error) });
     }
   });
 

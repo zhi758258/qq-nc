@@ -1,0 +1,13 @@
+{
+  "appid": "1112386029",
+  "serverUrl": "wss://gate-obt.nqf.qq.com/prod/ws",
+  "platform": "qq",
+  "os": "iOS",
+  "ver": "1.13.3.14_20260826",
+  "wsHeaders": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13)",
+    "Origin": "https://gate-obt.nqf.qq.com"
+  },
+  "key": "",
+  "name": ""
+}

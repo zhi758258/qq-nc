@@ -27,6 +27,8 @@ function registerAdminUserManageRoutes({
   userStore,
   requireAdminToken,
   requireAdminRole,
+  requireSuperAdminRole,
+  requireDangerConfirmation,
   getAdminUserMutationError,
 }) {
   /* ================= 卡密管理 ================= */
@@ -156,6 +158,67 @@ function registerAdminUserManageRoutes({
       return res.status(500).json({ ok: false, error: error.message });
     }
   });
+
+  /**
+   * 用户数据备份导出。
+   * 备份包含密码哈希，仅超级管理员可取。
+   */
+  app.get(
+    "/api/admin/users/backup/export",
+    requireAdminToken,
+    requireSuperAdminRole,
+    (req, res) => {
+      try {
+        const backup = userStore.exportUserBackup();
+        return res.json({ ok: true, data: backup });
+      } catch (error) {
+        return res.status(500).json({ ok: false, error: error.message });
+      }
+    },
+  );
+
+  /**
+   * 用户数据备份导入。
+   * mode=skip 仅新增缺失记录；mode=overwrite 以备份覆盖同名记录。
+   */
+  app.post(
+    "/api/admin/users/backup/import",
+    requireAdminToken,
+    requireSuperAdminRole,
+    (req, res) => {
+      try {
+        if (!requireDangerConfirmation(req, res, "IMPORT_USER_BACKUP")) return;
+        const currentUser = requireAdmin(req, res);
+        if (!currentUser) return;
+        const { backup, mode } = req.body || {};
+        const result = userStore.importUserBackup({
+          backup,
+          mode: mode === "overwrite" ? "overwrite" : "skip",
+          protectedUsernames: [currentUser.username],
+        });
+        if (!result.ok) {
+          return res.status(400).json({ ok: false, error: result.error });
+        }
+        if (_logger && typeof _logger.warn === "function") {
+          _logger.warn("导入用户备份", {
+            admin: currentUser.username || "",
+            mode: result.data.mode,
+            added: result.data.added,
+            overwritten: result.data.overwritten,
+            skipped: result.data.skipped,
+            cardsAdded: result.data.cardsAdded,
+            cardsOverwritten: result.data.cardsOverwritten,
+            cardsSkipped: result.data.cardsSkipped,
+            invalidUsers: result.data.invalidUsers.length,
+            invalidCards: result.data.invalidCards.length,
+          });
+        }
+        return res.json({ ok: true, data: result.data });
+      } catch (error) {
+        return res.status(500).json({ ok: false, error: error.message });
+      }
+    },
+  );
 
   app.post(
     "/api/admin/users/cleanup-expired",

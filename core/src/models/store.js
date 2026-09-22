@@ -1666,6 +1666,8 @@ function addOrUpdateAccount(account) {
             openId: nextOpenId ? String(nextOpenId) : '',
             avatar: nextAvatar || '',
             username: account.username || '',
+            napcatApi: account.napcatApi ? String(account.napcatApi).trim() : '',
+            napcatKey: account.napcatKey ? String(account.napcatKey) : '',
             createdAt: Date.now(),
             updatedAt: Date.now()
         });
